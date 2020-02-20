@@ -37,26 +37,9 @@ data class PositionWSResponse(@JsonProperty("data") val data: List<BitmexPositio
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class BitmexTrade(
-    @JsonProperty("side") val side: String?,
-    @JsonProperty("price") val price: BigDecimal?,
-    @JsonProperty("timestamp") val timestamp: String?)
-
-data class Channel(val highPrice: BigDecimal, val lowPrice: BigDecimal, val open: Long, val close: Long) {
-    override fun toString(): String {
-        return "Channel(highPrice = $highPrice, lowPrice = $lowPrice, open = ${Date(open)}, close = ${Date(close)})"
-    }
-}
-
-data class BarModel(val openPrice: BigDecimal, val closePrice: BigDecimal, val currentTime: Long) {
-    fun getMinMax(): Pair<BigDecimal, BigDecimal> = Pair(openPrice.min(closePrice), openPrice.max(closePrice));
-    fun getHeight(): BigDecimal {
-        val (minPrice, maxPrice) = getMinMax()
-        return maxPrice - minPrice
-    }
-    override fun toString(): String {
-        return "BarModel(openPrice = $openPrice, closePrice = $closePrice, currentTime = ${Date(currentTime)})"
-    }
-}
+        @JsonProperty("side") val side: String?,
+        @JsonProperty("price") val price: BigDecimal?,
+        @JsonProperty("timestamp") val timestamp: String?)
 
 enum class BitmexDirection {
     Up,
@@ -69,13 +52,11 @@ enum class WebSocketStatus {
     Closed
 }
 
-class BitmexClothoBot(private val prefModel: PrefModel) {
+class BitmexClothoBot(prefModel: PrefModel) {
     private val apiKey = prefModel.apiKey
     private val secretKey = prefModel.secretKey;
     private val url = "https://${prefModel.url}"
     private val wsUri = URI("wss://${prefModel.url}/realtime")
-
-    private val timeDatePattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
 
     private val telegramChatId = prefModel.telegramChatId
     private val telegramToken = prefModel.telegramToken
@@ -97,9 +78,6 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
     private var oldPrice = BigDecimal.ZERO
     private var oldDirection = BitmexDirection.None
 
-    private val heightInterval = prefModel.heightInterval
-    private val channelMinTime = prefModel.channelMinTime
-
     private val priceSensitive = prefModel.priceSensitive
     private var priceOffset = prefModel.priceOffset
     private val priceStep = prefModel.priceStep
@@ -114,15 +92,6 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
     private val hundredMillions = 100_000_000L
     private var posLastTime = 0L
-
-    private var barOpenPrice = BigDecimal.ZERO
-    private var barClosePrice = BigDecimal.ZERO
-    private val historyBars = ArrayList<BarModel>()
-    private val channels = HashMap<Long, Channel>()
-    private var recentBarTime = 0L
-    private var popularHeight = BigDecimal.ZERO
-    private val barModelsMaxSize = 1440
-    private val heightPeriod = 30
 
     fun close() {
         orderThread.stop()
@@ -152,7 +121,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
             override fun onMessage(message: String) = onHandleMessages(message)
 
-            override fun onError(e: Exception) { }
+            override fun onError(e: Exception) {}
         }
 
         socketState = WebSocketStatus.Opened
@@ -167,7 +136,9 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
                 telegramService.sendMessage(telegramChatId, "WebSocket reconnect!")
                 webSocket?.reconnect()
                 Thread.sleep(8000)
-                if (socketState == WebSocketStatus.Closed) { break }
+                if (socketState == WebSocketStatus.Closed) {
+                    break
+                }
             }
             telegramService.sendMessage(telegramChatId, "Can not reconnected!")
             while (!cancelAllOpenedOrders(pair.toString()));
@@ -184,12 +155,13 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         val isLongProfit = side == OrderType.BID && realise > profitVol
         val isShortProfit = side == OrderType.ASK && realise < -profitVol
-        val isLongLoss = side == OrderType.BID && realise < -20 * profitVol
-        val isShortLoss = side == OrderType.ASK && realise > 20 * profitVol
+        val isLongLoss = side == OrderType.BID && realise < -profitVol
+        val isShortLoss = side == OrderType.ASK && realise > profitVol
 
-        val message = "Position: side = <b>$side</b>, realise = <b>${realise.format(4)}</b>\n," +
-            "entry = <b>$entry</b>, price = <b>$price</b>\n" +
-            "Position with profit = <b>${isLongProfit || isShortProfit}</b>"
+        val message = "Position: side = <b>$side</b>," +
+                "realise = <b>${realise.format(5)}</b>\n," +
+                "entry = <b>$entry</b>, price = <b>$price</b>\n" +
+                "Position with profit = <b>${isLongProfit || isShortProfit}</b>"
         println("${Date()} WS -> $message")
 
         if (isLongProfit || isLongLoss || isShortProfit || isShortLoss) {
@@ -246,7 +218,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         } else -stopPxOffset
 
         var orderCount = 0
-        for (i in 0..(countOfOrders - 1)) {
+        for (i in 0 until countOfOrders) {
             val priceSteps = if (stop) {
                 price + if (side == OrderType.ASK) -stopPriceBias else stopPriceBias
             } else null
@@ -350,79 +322,12 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         }
     }
 
-    private fun findChannels() {
-        val index = historyBars.indexOfFirst { it.getHeight() < popularHeight }
-        val lastBar = historyBars[index]
-        var (oldMinPrice, oldMaxPrice) = lastBar.getMinMax()
-        var openTime = lastBar.currentTime
-        var i = 0L
-        for (bar in historyBars) {
-            if (i < index) continue
-            val (curMinPrice, curMaxPrice) = bar.getMinMax()
-            val lowPrice = oldMinPrice - popularHeight
-            val highPrice = oldMaxPrice + popularHeight
-
-            val oldHeight = highPrice - lowPrice
-            val curHeight = curMaxPrice - curMinPrice
-
-            if (curMinPrice > highPrice || curMaxPrice < lowPrice || curHeight > oldHeight) {
-                val isLongTime = bar.currentTime - openTime >= channelMinTime * 60 * 1000
-                if (isLongTime && channels[i] == null) {
-                    channels[i] = Channel(highPrice, lowPrice, openTime, bar.currentTime)
-                    telegramService.sendMessage(telegramChatId, "Channel[$i] ${channels[i]}")
-                }
-                if (curHeight < oldHeight) {
-                    oldMaxPrice = curMaxPrice
-                    oldMinPrice = curMinPrice
-                }
-                openTime = bar.currentTime
-            }
-            i++
-        }
-    }
-
-    private fun toPopularHeight(): Int? {
-        val heights = ArrayList<BigDecimal>()
-        historyBars.forEach { model -> heights.add(model.getHeight()); }
-
-        val heightCounter = HashMap<Int, Long>()
-        for (i in 0..100 step heightInterval) {
-            heights.forEach { barHeight ->
-                if (barHeight.toInt() > i && barHeight.toInt() < i + heightInterval) {
-                    heightCounter[i] = heightCounter[i]?.let { it + 1 } ?: 1
-                }
-            }
-        }
-
-        return heightCounter.maxBy{ it.value }?.key?.let { (it + 1) * heightInterval }
-    }
-
-    private fun composeModel(curPrice: BigDecimal, date: Date?) {
-        val actualBarTime = date?.time ?: return
-        if (TimeUnit.MILLISECONDS.toMinutes(actualBarTime) - TimeUnit.MILLISECONDS.toMinutes(recentBarTime) >= 1) {
-            if (recentBarTime != 0L) {
-                historyBars.add(BarModel(barOpenPrice, barClosePrice, recentBarTime));
-                if (historyBars.size >= barModelsMaxSize) {
-                    channels.remove(channels.minBy { it.key; }?.key)
-                    historyBars.removeAt(0)
-                }
-                if (historyBars.size % heightPeriod == 0) toPopularHeight()?.let { popularHeight = BigDecimal(it) }
-                if (popularHeight != BigDecimal.ZERO) findChannels()
-                barOpenPrice = BigDecimal.ZERO
-            }
-            recentBarTime = actualBarTime
-        }
-
-        if (barOpenPrice == BigDecimal.ZERO) barOpenPrice = curPrice
-        barClosePrice = curPrice
-    }
-
     private fun foundOffset(curPrice: BigDecimal): BigDecimal? {
         return if (oldDirection == BitmexDirection.Up) {
             openedMainOrders.minBy { it.key }
         } else {
             openedMainOrders.maxBy { it.key }
-        }?.let { (curPrice - it.key).abs() }
+        }?.let { curPrice - it.key }
     }
 
     private fun updateOrders(curPrice: BigDecimal, offset: BigDecimal?, maxDiff: BigDecimal, minDiff: BigDecimal) {
@@ -434,19 +339,13 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
     private fun updLastPrice(price: BigDecimal?, tradeTime: String?) {
         if (price == null || tradeTime == null) return;
         if (oldPrice != BigDecimal.ZERO && !orderThread.isAlive) {
-            val date = try {
-                SimpleDateFormat(timeDatePattern).apply { timeZone = TimeZone.getTimeZone("GMT") }.parse(tradeTime)
-            } catch (e: ParseException) { return }
-            composeModel(price, date)
-            if (true) {
-                updateOrders(price, foundOffset(price), priceOffset + priceSensitive, priceOffset - priceSensitive)
-            }
+            updateOrders(price, foundOffset(price), priceSensitive, -priceSensitive)
         }
         oldPrice = price
     }
 
     private fun updPositions() {
-        if (System.currentTimeMillis() + -posLastTime < 1000 || positionsThread.isAlive) return
+        if (System.currentTimeMillis() - posLastTime < 1000 || positionsThread.isAlive) return;
         positionsThread = Thread { closePositions(); }
         positionsThread.start()
         posLastTime = System.currentTimeMillis()

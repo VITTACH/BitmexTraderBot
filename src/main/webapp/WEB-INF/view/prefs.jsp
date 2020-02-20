@@ -39,15 +39,6 @@
         </tr>
         <tr><td><br></td></tr>
         <tr>
-            <td>Bars height step:</td>
-            <td><form:input path="heightInterval"/></td>
-        </tr>
-        <tr>
-            <td>Channel period:</td>
-            <td><form:input path="channelMinTime"/></td>
-        </tr>
-        <tr><td><br></td></tr>
-        <tr>
             <td>Price sensitive:</td>
             <td><form:input path="priceSensitive"/></td>
         </tr>
