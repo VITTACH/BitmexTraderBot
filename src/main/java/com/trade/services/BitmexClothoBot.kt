@@ -15,10 +15,7 @@ import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.math.BigDecimal
 import java.net.URI
-import java.text.ParseException
-import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.TimeUnit
 import kotlin.collections.HashMap
 import kotlin.math.absoluteValue
 
@@ -67,12 +64,13 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private var orderThread: Thread = Thread()
     private var watcherThread: Thread = Thread()
     private var positionsThread: Thread = Thread()
-    private var socketState = WebSocketStatus.Closed
 
+    private val openedPosOrders = HashMap<BigDecimal, String>()
     private val openedMainOrders = HashMap<BigDecimal, String>()
     private val openedStopOrders = HashMap<BigDecimal, String>()
 
     private val objMapper = ObjectMapper()
+    private var socketState = WebSocketStatus.Closed
     private var webSocket: WebSocketClient? = null;
 
     private var oldPrice = BigDecimal.ZERO
@@ -90,8 +88,16 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private val orderVol = prefModel.orderVol
     private val countOfOrders = prefModel.countOfOrders
 
-    private val hundredMillions = 100_000_000L
-    private var posLastTime = 0L
+    private var posLastUpdateTime = 0L
+
+    private var positionTime = 0L
+
+    companion object {
+        private const val HUNDRED_MILLIONS = 100_000_000L
+        private const val POSITION_PROFIT_SCALE = 10
+        private const val POSITION_LOSS_SCALE = 100
+        private const val POSITION_MAX_MINUTES = 5
+    }
 
     fun close() {
         orderThread.stop()
@@ -129,6 +135,24 @@ class BitmexClothoBot(prefModel: PrefModel) {
         startWatchDog()
     }
 
+    fun subscribeTrades(symbol: String) {
+        webSocket?.send(Subscribe("subscribe", listOf("trade:$symbol")).toJson());
+    }
+
+    fun authentication() {
+        val expireTime = System.currentTimeMillis()
+        val sign = BitmexDigest.createInstance(secretKey).createWsSign(expireTime)
+        webSocket?.send(Subscribe("authKeyExpires", listOf(apiKey, expireTime, sign)).toJson())
+    }
+
+    fun subscribePositions(symbol: String) {
+        webSocket?.send(Subscribe("subscribe", listOf("position:$symbol")).toJson())
+    }
+
+    private fun Double.format(digits: Int) = String.format("%.${digits}f", this)
+
+    private fun Subscribe.toJson() = objMapper.writeValueAsString(this)
+
     private fun startWatchDog() {
         watcherThread = Thread {
             while (true) {
@@ -146,29 +170,54 @@ class BitmexClothoBot(prefModel: PrefModel) {
         watcherThread.start()
     }
 
+    // -- START POSITIONS
+    private fun closePositions() {
+        val positions = myPollingTradeService.getOpenPositions() ?: return;
+
+        if (positions.isEmpty()) {
+            if (openedPosOrders.isNotEmpty()) {
+                positionTime = 0;
+                cancelOrders(openedPosOrders, force = true);
+            }
+        } else if (positionTime == 0L) {
+            positionTime = Date().time
+        }
+
+        for (position in positions) {
+            val entryPrice = position.avgEntryPrice?.toDouble() ?: continue
+            val quantity = position.currentQty?.toDouble() ?: continue
+            closePosition(pair, entryPrice, quantity)
+        }
+    }
+
     private fun closePosition(pair: CurrencyPair, entry: Double, amount: Double) {
         val price = myPollingTradeService.getTicker(pair.toString())?.get(0)?.lastPrice ?: return;
-        val side = if (amount >= 0) OrderType.BID else OrderType.ASK;
-        val currentQty = amount.absoluteValue
-        val realise = currentQty * (1 / entry - 1 / price.toDouble())
-        val profitVol = 4 * currentQty / hundredMillions
+
+        val diffTime = Date().time - positionTime
+        val scale = 1 - diffTime / 60000 / POSITION_MAX_MINUTES
+        val amountValue = amount.absoluteValue / HUNDRED_MILLIONS
+
+        val side = if (amount >= 0) OrderType.BID else OrderType.ASK
+        val realise = amount.absoluteValue * (1 / entry - 1 / price.toDouble())
+        val profitVol = POSITION_PROFIT_SCALE * amountValue * scale
+        val lossVol = POSITION_LOSS_SCALE * amountValue * scale
 
         val isLongProfit = side == OrderType.BID && realise > profitVol
         val isShortProfit = side == OrderType.ASK && realise < -profitVol
-        val isLongLoss = side == OrderType.BID && realise < -profitVol
-        val isShortLoss = side == OrderType.ASK && realise > profitVol
+        val isLongLoss = side == OrderType.BID && realise < -lossVol
+        val isShortLoss = side == OrderType.ASK && realise > lossVol
 
         val message = "Position: side = <b>$side</b>," +
-                "realise = <b>${realise.format(5)}</b>\n," +
-                "entry = <b>$entry</b>, price = <b>$price</b>\n" +
+                "realise = <b>${realise.format(5)}</b>\n, entry = <b>$entry</b>," +
+                "price = <b>$price</b>, scale = <b>$scale</b>\n" +
                 "Position with profit = <b>${isLongProfit || isShortProfit}</b>"
         println("${Date()} WS -> $message")
 
         if (isLongProfit || isLongLoss || isShortProfit || isShortLoss) {
             telegramService.sendMessage(telegramChatId, "Close position. $message")
             try {
-                placeOrder(pair, side, currentQty)
-                println("${Date()} WS <- End closing open positions")
+                placeOrder(pair, side, amount.absoluteValue)
+                println("${Date()} WS <- Сlose position. $message")
             } catch (exception: Exception) {
                 exception.printStackTrace()
             }
@@ -187,22 +236,15 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 trigger = null,
                 closeOnTrigger = false
         )
-        myPollingTradeService.placeBitmexOrder(order, BitmexOrderType.Limit, param)
-    }
-
-    private fun closePositions() {
-        val positions = myPollingTradeService.getOpenPositions() ?: return;
-
-        for (position in positions) {
-            val entryPrice = position.avgEntryPrice?.toDouble() ?: continue
-            val quantity = position.currentQty?.toDouble() ?: continue
-            closePosition(pair, entryPrice, quantity)
+        val orderId = myPollingTradeService.placeBitmexOrder(order, BitmexOrderType.Limit, param)
+        order.price?.let { price ->
+            openedPosOrders[price] = orderId
         }
     }
+    // -- END POSITIONS
 
     private fun placeOrders(side: OrderType, price: BigDecimal, type: BitmexOrderType, orderVolume: BigDecimal?) {
 
-        println("${Date()} WS -> Start placing $countOfOrders orders")
         var price = price
         val stop = type == BitmexOrderType.StopLimit
         val param = BitmexOrderParams(
@@ -256,7 +298,9 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 break
             }
         }
-        println("${Date()} WS <- Placed $orderCount/$countOfOrders orders")
+        if (orderCount > 0) {
+            println("${Date()} WS <- End place $orderCount/$countOfOrders orders")
+        }
     }
 
     private fun cancelAllOpenedOrders(currency: String? = null): Boolean {
@@ -268,9 +312,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 if (orderIds.isEmpty()) return success
                 orderIds.forEach { myPollingTradeService.cancelMyBitmexOrder(it); }
             } else myPollingTradeService.cancelOrderBySymbol(currency)
+            openedPosOrders.clear()
             openedMainOrders.clear()
             openedStopOrders.clear()
-            println("${Date()} WS <- End canceling All opened orders")
+            println("${Date()} WS <- End cancel All opened orders")
         } catch (exception: Exception) {
             success = false
             exception.printStackTrace()
@@ -279,14 +324,18 @@ class BitmexClothoBot(prefModel: PrefModel) {
         return success
     }
 
-    private fun cancelOrders(side: OrderType, lowPrice: BigDecimal, orders: HashMap<BigDecimal, String>): Boolean {
+    private fun cancelOrders(
+            orders: HashMap<BigDecimal, String>,
+            side: OrderType = OrderType.ASK,
+            lowPrice: BigDecimal = BigDecimal.ZERO,
+            force: Boolean = false
+    ): Boolean {
         val iterator = orders.entries.iterator()
         var success = true
         var orderCount = 0
-        println("${Date()} WS -> Start cancel orders out of corridor")
         while (iterator.hasNext()) {
             val next = iterator.next()
-            if ((next.key < lowPrice && side == OrderType.ASK) || (next.key > lowPrice && side == OrderType.BID)) {
+            if (force || (next.key < lowPrice && side == OrderType.ASK) || (next.key > lowPrice && side == OrderType.BID)) {
                 Thread.sleep(100)
                 try {
                     myPollingTradeService.cancelMyBitmexOrder(next.value)
@@ -298,7 +347,9 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 }
             }
         }
-        println("${Date()} WS <- End canceling my $orderCount orders")
+        if (!force && orderCount > 0) {
+            println("${Date()} WS <- End cancel my $orderCount orders")
+        }
         return success
     }
 
@@ -322,6 +373,23 @@ class BitmexClothoBot(prefModel: PrefModel) {
         }
     }
 
+    private fun updPositions() {
+        if (System.currentTimeMillis() - posLastUpdateTime < 1000 || positionsThread.isAlive) {
+            return
+        }
+        positionsThread = Thread { closePositions(); }
+        positionsThread.start()
+        posLastUpdateTime = System.currentTimeMillis()
+    }
+
+    private fun updLastPrice(price: BigDecimal?, tradeTime: String?) {
+        if (price == null || tradeTime == null) return;
+        if (oldPrice != BigDecimal.ZERO && !orderThread.isAlive) {
+            updateOrders(price, foundOffset(price), priceSensitive, -priceSensitive)
+        }
+        oldPrice = price
+    }
+
     private fun foundOffset(curPrice: BigDecimal): BigDecimal? {
         return if (oldDirection == BitmexDirection.Up) {
             openedMainOrders.minBy { it.key }
@@ -336,55 +404,20 @@ class BitmexClothoBot(prefModel: PrefModel) {
         orderThread.start()
     }
 
-    private fun updLastPrice(price: BigDecimal?, tradeTime: String?) {
-        if (price == null || tradeTime == null) return;
-        if (oldPrice != BigDecimal.ZERO && !orderThread.isAlive) {
-            updateOrders(price, foundOffset(price), priceSensitive, -priceSensitive)
-        }
-        oldPrice = price
-    }
-
-    private fun updPositions() {
-        if (System.currentTimeMillis() - posLastTime < 1000 || positionsThread.isAlive) return;
-        positionsThread = Thread { closePositions(); }
-        positionsThread.start()
-        posLastTime = System.currentTimeMillis()
-    }
-
     private fun updateOrders(orderPrice: BigDecimal) {
         val direction = if (orderPrice > oldPrice) BitmexDirection.Up else BitmexDirection.Down
 
         val side = if (direction == BitmexDirection.Up) OrderType.ASK else OrderType.BID
-        val bottomPrice = orderPrice + if (side == OrderType.ASK) priceOffset else -priceOffset
+        val lowPrice = orderPrice + if (side == OrderType.ASK) priceOffset else -priceOffset
 
-        val success = if (oldDirection == direction) {
-            cancelOrders(side, bottomPrice, openedMainOrders) && cancelOrders(side, bottomPrice, openedStopOrders)
-        } else cancelAllOpenedOrders(pair.toString())
-        if (!success) return
+        if (!cancelOrders(openedMainOrders, side, lowPrice) || !cancelOrders(openedStopOrders, side, lowPrice)) {
+            return
+        }
 
-        placeOrders(side, bottomPrice, BitmexOrderType.Limit, orderVol)
-        val otherSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID;
-        placeOrders(otherSide, bottomPrice, BitmexOrderType.StopLimit, orderVol)
+        placeOrders(side, lowPrice, BitmexOrderType.Limit, orderVol)
+        // val otherSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID;
+        // placeOrders(otherSide, lowPrice, BitmexOrderType.StopLimit, orderVol)
 
         oldDirection = direction
     }
-
-    fun subscribeTrades(symbol: String) {
-        webSocket?.send(Subscribe("subscribe", listOf("trade:$symbol")).toJson());
-    }
-
-    fun authentication() {
-        val expireTime = System.currentTimeMillis()
-        val sign = BitmexDigest.createInstance(secretKey).createWsSign(expireTime)
-        webSocket?.send(Subscribe("authKeyExpires", listOf(apiKey, expireTime, sign)).toJson())
-    }
-
-    fun subscribePositions(symbol: String) {
-        webSocket?.send(Subscribe("subscribe", listOf("position:$symbol")).toJson())
-    }
-
-    private fun Double.format(digits: Int) = String.format("%.${digits}f", this)
-
-    private fun Subscribe.toJson() = objMapper.writeValueAsString(this)
-
 }
