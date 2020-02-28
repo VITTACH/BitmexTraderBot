@@ -96,7 +96,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         private const val HUNDRED_MILLIONS = 100_000_000L
         private const val POSITION_PROFIT_SCALE = 10
         private const val POSITION_LOSS_SCALE = 100
-        private const val POSITION_MAX_MINUTES = 5
+        private const val POSITION_MAX_MINUTES = 5f
     }
 
     fun close() {
@@ -194,7 +194,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val price = myPollingTradeService.getTicker(pair.toString())?.get(0)?.lastPrice ?: return;
 
         val diffTime = Date().time - positionTime
-        val scale = 1 - diffTime / 60000 / POSITION_MAX_MINUTES
+        val scale = 1f - Math.min(POSITION_MAX_MINUTES, diffTime / 60000f) / POSITION_MAX_MINUTES;
         val amountValue = amount.absoluteValue / HUNDRED_MILLIONS
 
         val side = if (amount >= 0) OrderType.BID else OrderType.ASK
