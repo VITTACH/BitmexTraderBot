@@ -199,7 +199,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
         val side = if (amount >= 0) OrderType.BID else OrderType.ASK
         val realise = amount.absoluteValue * (1 / entry - 1 / price.toDouble())
-        val profitVol = POSITION_PROFIT_SCALE * amountValue * scale
+        val profitVol = POSITION_PROFIT_SCALE * amountValue
         val lossVol = POSITION_LOSS_SCALE * amountValue * scale
 
         val isLongProfit = side == OrderType.BID && realise > profitVol
@@ -217,7 +217,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
             telegramService.sendMessage(telegramChatId, "Close position. $message")
             try {
                 placeOrder(pair, side, amount.absoluteValue)
-                println("${Date()} WS <- Сlose position. $message")
+                println("${Date()} WS <- Close position. $message")
             } catch (exception: Exception) {
                 exception.printStackTrace()
             }
