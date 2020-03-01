@@ -50,6 +50,13 @@ enum class WebSocketStatus {
 }
 
 class BitmexClothoBot(prefModel: PrefModel) {
+    companion object {
+        private const val HUNDRED_MILLIONS = 100_000_000L
+        private const val POSITION_PROFIT_SCALE = 10
+        private const val POSITION_LOSS_SCALE = 100
+        private const val POSITION_MAX_MINUTES = 10f
+    }
+
     private val apiKey = prefModel.apiKey
     private val secretKey = prefModel.secretKey;
     private val url = "https://${prefModel.url}"
@@ -92,12 +99,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private var positionTime = 0L
 
-    companion object {
-        private const val HUNDRED_MILLIONS = 100_000_000L
-        private const val POSITION_PROFIT_SCALE = 10
-        private const val POSITION_LOSS_SCALE = 100
-        private const val POSITION_MAX_MINUTES = 5f
-    }
+    private var firstOrder = true
 
     fun close() {
         orderThread.stop()
@@ -279,7 +281,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
             } else stopPriceStep
 
             val orders = if (stop) openedStopOrders else openedMainOrders
-            if (hasNearOrder(orderPrice, orders)) continue
+            if (hasNearOrder(orderPrice, orders)) {
+                println("Has near order: $orderPrice")
+                continue
+            }
 
             val order = LimitOrder(side, orderVolume, pair, orderPrice, priceSteps)
             Thread.sleep(200)
@@ -333,22 +338,23 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val iterator = orders.entries.iterator()
         var success = true
         var orderCount = 0
+        println("${Date()} WS -> Start cancel order size ${orders.size}")
         while (iterator.hasNext()) {
             val next = iterator.next()
-            if (force || (next.key < lowPrice && side == OrderType.ASK) || (next.key > lowPrice && side == OrderType.BID)) {
-                Thread.sleep(100)
+            if ((lowPrice - next.key).abs() >= priceStep || force) {
                 try {
                     myPollingTradeService.cancelMyBitmexOrder(next.value)
                     iterator.remove()
                     orderCount++
+                    Thread.sleep(100)
                 } catch (exception: Exception) {
                     success = false
                     break
                 }
             }
         }
-        if (!force && orderCount > 0) {
-            println("${Date()} WS <- End cancel my $orderCount orders")
+        if (!force) {
+            println("${Date()} WS <- End cancel with result = $success, $orderCount orders");
         }
         return success
     }
@@ -382,12 +388,15 @@ class BitmexClothoBot(prefModel: PrefModel) {
         posLastUpdateTime = System.currentTimeMillis()
     }
 
-    private fun updLastPrice(price: BigDecimal?, tradeTime: String?) {
-        if (price == null || tradeTime == null) return;
-        if (oldPrice != BigDecimal.ZERO && !orderThread.isAlive) {
-            updateOrders(price, foundOffset(price), priceSensitive, -priceSensitive)
+    private fun updLastPrice(curPrice: BigDecimal?, tradeTime: String?) {
+        if (curPrice == null || tradeTime == null) return
+        if (oldPrice == BigDecimal.ZERO) {
+            oldPrice = curPrice
+        } else if (!orderThread.isAlive) {
+            val priceDifferent = priceOffset + priceSensitive
+            updateOrders(curPrice, foundOffset(curPrice), priceDifferent, -priceDifferent)
+            oldPrice = curPrice
         }
-        oldPrice = price
     }
 
     private fun foundOffset(curPrice: BigDecimal): BigDecimal? {
@@ -399,9 +408,14 @@ class BitmexClothoBot(prefModel: PrefModel) {
     }
 
     private fun updateOrders(curPrice: BigDecimal, offset: BigDecimal?, maxDiff: BigDecimal, minDiff: BigDecimal) {
-        if (!(openedMainOrders.isEmpty() || (offset != null && (offset >= maxDiff || offset <= minDiff)))) return
-        orderThread = Thread { updateOrders(curPrice) }
-        orderThread.start()
+        if (firstOrder || (offset != null && (offset >= maxDiff || offset <= minDiff))) {
+            orderThread = Thread {
+                updateOrders(curPrice)
+                orderThread.stop()
+            }
+            orderThread.start()
+            if (firstOrder) firstOrder = false
+        }
     }
 
     private fun updateOrders(orderPrice: BigDecimal) {
@@ -410,13 +424,18 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val side = if (direction == BitmexDirection.Up) OrderType.ASK else OrderType.BID
         val lowPrice = orderPrice + if (side == OrderType.ASK) priceOffset else -priceOffset
 
-        if (!cancelOrders(openedMainOrders, side, lowPrice) || !cancelOrders(openedStopOrders, side, lowPrice)) {
+        if (!(cancelOrders(openedMainOrders, side, lowPrice)/*&& cancelOrders(openedStopOrders, side, lowPrice)*/)) {
             return
         }
 
-        placeOrders(side, lowPrice, BitmexOrderType.Limit, orderVol)
-        // val otherSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID;
-        // placeOrders(otherSide, lowPrice, BitmexOrderType.StopLimit, orderVol)
+        if (openedMainOrders.size < countOfOrders) {
+            placeOrders(side, lowPrice, BitmexOrderType.Limit, orderVol)
+        }
+        /*
+        val stopOrderSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID;
+        if (openedStopOrders.size < countOfOrders) {
+            placeOrders(stopOrderSide, lowPrice, BitmexOrderType.StopLimit, orderVol)
+        }*/
 
         oldDirection = direction
     }
