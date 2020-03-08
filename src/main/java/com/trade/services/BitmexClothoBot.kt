@@ -167,7 +167,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                     break
                 }
             }
-            telegramService.sendMessage(telegramChatId, "Can not reconnected!")
+            telegramService.sendMessage(telegramChatId, "Can not reconnect socket")
             while (!cancelAllOpenedOrders(pair.toString()));
         }
         watcherThread.start()
@@ -394,7 +394,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
     }
 
     private fun updLastPrice(curPrice: BigDecimal?, tradeTime: String?) {
-        if (curPrice == null || tradeTime == null) return
+        if (curPrice == null || tradeTime == null) {
+            return
+        }
+
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = curPrice
         } else if (!orderThread.isAlive) {
@@ -416,7 +419,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private fun updateOrders(curPrice: BigDecimal, offset: BigDecimal?, maxDiff: BigDecimal, minDiff: BigDecimal) {
         val init = firstOrder.getAndSet(false)
         if (init || (offset != null && (offset >= maxDiff || offset <= minDiff))) {
-            orderThread = Thread { updateOrders(curPrice) }.apply { start() }
+            updateOrders(curPrice)
         }
     }
 
