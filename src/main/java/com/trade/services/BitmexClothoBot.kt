@@ -281,10 +281,15 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 -stopPriceStep
             } else stopPriceStep
 
-            val orders = if (stop) openedStopOrders else openedMainOrders
+            val orders = if (stop) {
+                openedStopOrders
+            } else openedMainOrders
+
             if (hasNearOrder(orderPrice, orders)) {
                 println("Has near order: $orderPrice")
                 continue
+            } else {
+                println("NOT found near orders in: $orders, at price: $orderPrice")
             }
 
             val order = LimitOrder(side, orderVolume, pair, orderPrice, priceSteps)
@@ -292,10 +297,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
             try {
                 val id = myPollingTradeService.placeBitmexOrder(order, type, param)
                 println("Order placed with price: $orderPrice")
-                if (type == BitmexOrderType.Limit) {
-                    openedMainOrders[orderPrice] = id
-                } else {
+                if (stop) {
                     openedStopOrders[orderPrice] = id
+                } else {
+                    openedMainOrders[orderPrice] = id
                 }
                 orderCount++
             } catch (exception: Exception) {
