@@ -18,13 +18,11 @@ class BaseController {
         private val password = "qwerty"
     }
 
-    var bitmexClothoBotInstance: BitmexClothoBot? = null
-
     var prefModel: PrefModel = PrefModel()
 
     @RequestMapping(value = ["/stopClotho"], method = [RequestMethod.POST])
     fun stopClotho(): ModelAndView {
-        bitmexClothoBotInstance?.close()
+        BitmexClothoBot.close()
         return ModelAndView("prefs", "prefModel", prefModel)
     }
 
@@ -50,8 +48,7 @@ class BaseController {
 
     @PostConstruct
     fun startClotho() {
-        bitmexClothoBotInstance?.close()
-        bitmexClothoBotInstance = BitmexClothoBot(prefModel)
-        bitmexClothoBotInstance?.start()
+        BitmexClothoBot.close()
+        BitmexClothoBot.start(prefModel)
     }
 }

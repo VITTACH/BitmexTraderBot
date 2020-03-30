@@ -16,8 +16,8 @@ data class PrefModel(
     var priceSensitive: BigDecimal = BigDecimal("6"),
     var countOfOrders: Int = 1,
     var orderVol: BigDecimal = BigDecimal("100"),
-    var priceOffset: BigDecimal = BigDecimal("30"),
-    var priceStep: BigDecimal = BigDecimal("6"),
+    var priceOffset: BigDecimal = BigDecimal("6"),
+    var priceStep: BigDecimal = BigDecimal("10"),
     var stopPriceBias: BigDecimal = BigDecimal("0.5"),
     var stopPriceStep: BigDecimal = BigDecimal("6"),
     var stopPxOffset: BigDecimal = BigDecimal("14")
