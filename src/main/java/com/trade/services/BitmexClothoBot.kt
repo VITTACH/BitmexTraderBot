@@ -138,7 +138,6 @@ object BitmexClothoBot {
 
         webSocket = object : WebSocketClient(wsUri) {
             override fun onOpen(hand: ServerHandshake) {
-                println("DEBUG_0: thread = ${Thread.currentThread().id}")
                 telegramService.sendMessage(telegramChatId, "WebSocket connected!")
 
                 synchronized(socketState) { socketState = WebSocketStatus.Opened; }
@@ -430,7 +429,6 @@ object BitmexClothoBot {
     }
 
     private fun updLastPrice(curPrice: BigDecimal?, tradeTime: String?) {
-        println("DEBUG_1: thread = ${Thread.currentThread().id}")
         if (curPrice == null || tradeTime == null) {
             return
         }
