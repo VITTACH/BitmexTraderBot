@@ -70,7 +70,7 @@
         </tr>
         <tr>
             <td>Stop price offset:</td>
-            <td><form:input path="stopPxOffset"/></td>
+            <td><form:input path="stopLossOffset"/></td>
         </tr>
     </table>
 </form:form>

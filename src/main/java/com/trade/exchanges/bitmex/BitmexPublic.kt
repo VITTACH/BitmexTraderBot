@@ -17,6 +17,8 @@ interface BitmexPublic : BitmexAuthorization {
     @GET
     @Path("orderBook/L2")
     @Throws(IOException::class)
-    fun getDepth(@QueryParam("symbol") pair: String,
-                 @QueryParam("depth") depth: Int?): List<BitmexPublicOrder>
+    fun getDepth(
+            @QueryParam("symbol") pair: String,
+            @QueryParam("depth") depth: Int?
+    ): List<BitmexPublicOrder>
 }

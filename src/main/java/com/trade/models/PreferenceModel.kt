@@ -13,12 +13,12 @@ data class PrefModel(
     var secretKey: String = "jSshrCKFCQWEAbLkogj7QivqGTSos1KfKzo_TICF8XGn96Hg",
     var url: String = "testnet.bitmex.com",
     var pair: CurrencyPair = CurrencyPair("XBT/USD"),
-    var priceSensitive: BigDecimal = BigDecimal("6"),
+    var priceSensitive: BigDecimal = BigDecimal("5"),
     var countOfOrders: Int = 1,
     var orderVol: BigDecimal = BigDecimal("100"),
-    var priceOffset: BigDecimal = BigDecimal("6"),
+    var priceOffset: BigDecimal = BigDecimal("15"),
     var priceStep: BigDecimal = BigDecimal("10"),
+    var stopLossOffset: BigDecimal = BigDecimal("14"),
     var stopPriceBias: BigDecimal = BigDecimal("0.5"),
-    var stopPriceStep: BigDecimal = BigDecimal("6"),
-    var stopPxOffset: BigDecimal = BigDecimal("14")
+    var stopPriceStep: BigDecimal = BigDecimal("10")
 )
