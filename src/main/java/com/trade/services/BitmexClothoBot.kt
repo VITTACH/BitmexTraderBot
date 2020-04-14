@@ -54,8 +54,9 @@ enum class WebSocketStatus {
 }
 
 object BitmexClothoBot {
-    private const val POSITION_PROFIT_SCALE = 9
-    private const val POSITION_LOSS_SCALE = 9
+    private const val WS_TIMEOUT_TIME = 120 * 1000
+    private const val POSITION_PROFIT_SCALE = 5
+    private const val POSITION_LOSS_SCALE = 3
 
     private lateinit var apiKey: String
     private lateinit var secretKey: String
@@ -69,6 +70,7 @@ object BitmexClothoBot {
     private lateinit var tradeService: BitmexTradeServiceRaw
 
     private var watcherThread: Thread = Thread()
+    private var ordersThread: Thread = Thread()
     private var positionsThread: Thread = Thread()
 
     private val openedPosOrders = ConcurrentHashMap<BigDecimal, String>()
@@ -82,21 +84,23 @@ object BitmexClothoBot {
     private var oldPrice = BigDecimal.ZERO
     private var oldDirection = BitmexDirection.None
 
-    private lateinit var priceSensitive: BigDecimal
+    private lateinit var minPriceSensitive: BigDecimal
+    private lateinit var maxPriceSensitive: BigDecimal
     private lateinit var priceOffset: BigDecimal
     private lateinit var priceStep: BigDecimal
+    private lateinit var orderVol: BigDecimal
     private lateinit var pair: CurrencyPair
 
     private lateinit var stopLossOffset: BigDecimal
     private lateinit var stopPriceStep: BigDecimal
     private lateinit var stopPriceBias: BigDecimal
 
-    private lateinit var orderVol: BigDecimal
     private var countOfOrders = 0
 
     private var posLastUpdTime = 0L
+    private var wsLastUpdTime = 0L
 
-    private val firstOrder = AtomicBoolean(true)
+    private val isInit = AtomicBoolean(true)
 
     fun close() {
         watcherThread.stop()
@@ -117,7 +121,8 @@ object BitmexClothoBot {
         telegramToken = prefModel.telegramToken
         telegramService = TelegramCore(telegramToken).messageService
 
-        priceSensitive = prefModel.priceSensitive
+        minPriceSensitive = prefModel.minPriceSensitive
+        maxPriceSensitive = prefModel.maxPriceSensitive
         priceOffset = prefModel.priceOffset
         priceStep = prefModel.priceStep
         pair = prefModel.pair
@@ -177,15 +182,24 @@ object BitmexClothoBot {
     private fun startWatchDog() {
         watcherThread = Thread {
             while (true) {
-                if (socketState == WebSocketStatus.Opened) continue
-                telegramService.sendMessage(telegramChatId, "WebSocket reconnect!")
+                if (System.currentTimeMillis() - wsLastUpdTime > WS_TIMEOUT_TIME) {
+                    socketState = WebSocketStatus.Closed
+                }
+                if (socketState == WebSocketStatus.Opened) {
+                    continue
+                }
+                val message = "WatchDOG: WebSocket reconnect!"
+                println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
+                telegramService.sendMessage(telegramChatId, message)
                 webSocket?.reconnect()
-                Thread.sleep(8000)
+                Thread.sleep(60000)
                 if (socketState == WebSocketStatus.Closed) {
                     break
                 }
             }
-            telegramService.sendMessage(telegramChatId, "Can not reconnect socket")
+            val message = "WatchDOG: Can not reconnect socket"
+            println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
+            telegramService.sendMessage(telegramChatId, message)
             while (!cancelAllOpenedOrders(pair.toString()));
         }
         watcherThread.start()
@@ -314,7 +328,6 @@ object BitmexClothoBot {
                 orderCount++
             } catch (exception: Exception) {
                 exception.printStackTrace()
-                Thread.sleep(6000)
                 break
             }
         }
@@ -339,7 +352,6 @@ object BitmexClothoBot {
         } catch (exception: Exception) {
             success = false
             exception.printStackTrace()
-            Thread.sleep(6000)
         }
         return success
     }
@@ -375,11 +387,12 @@ object BitmexClothoBot {
                     tradeService.cancelMyBitmexOrder(orderEntry.value)
                     iterator.remove()
                     orderCount++
-                    Thread.sleep(100)
+                    Thread.sleep(200)
                 }
             }
         } catch (exception: Exception) {
-            success = cancelAllOpenedOrders()
+            while(!cancelAllOpenedOrders(pair.toString()));
+            success = false
         }
 
         println("${Date()} WS <- End cancel result = $success, $orderCount orders")
@@ -413,13 +426,18 @@ object BitmexClothoBot {
     }
 
     private fun onHandleMessages(message: String) {
+        wsLastUpdTime = System.currentTimeMillis()
+
         val response = when {
             message.contains("table\":\"trade") -> objMapper.readValue(message, TradeWSResponse::class.java)
             message.contains("table\":\"position") -> objMapper.readValue(message, PositionWSResponse::class.java);
-            else -> if (message.contains("error")) {
-                socketState = WebSocketStatus.Closed
-                throw Exception(message)
-            } else null
+            else -> {
+                println("${ConsoleColors.GREEN_BACKGROUND_BRIGHT}Websocket message: $message${ConsoleColors.RESET}")
+                if (message.contains("error")) {
+                    socketState = WebSocketStatus.Closed
+                    throw Exception(message)
+                } else null
+            }
         }
 
         when (response) {
@@ -433,26 +451,42 @@ object BitmexClothoBot {
             return
         }
         positionsThread = Thread {
-            try { closePositions() } catch (exception: Exception) {}
+            try { closePositions() }
+            catch (exception: Exception) {
+                exception.printStackTrace()
+                positionsThread.stop()
+            }
         }.apply { start() }
         posLastUpdTime = System.currentTimeMillis()
     }
 
     private fun updLastPrice(currentPrice: BigDecimal?, tradeTime: String?) {
-        if (currentPrice == null || tradeTime == null) {
-            return
-        }
+        if (currentPrice == null || tradeTime == null) return
 
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
         } else if (oldPrice != currentPrice) {
-            val maxOffset = priceOffset + priceSensitive
-            val offset = orderPriceOffset(currentPrice)
-            val init = firstOrder.getAndSet(false)
+            val offset = orderPriceOffset(currentPrice) ?: return
+            val minOffset = priceOffset + minPriceSensitive
+            val maxOffset = priceOffset + maxPriceSensitive
+            val init = isInit.getAndSet(false)
 
-            if (init || (offset != null && (offset >= maxOffset || offset <= -maxOffset))) {
-                Thread {
-                    try { updateOrders(currentPrice) } catch (exception: Exception) {}
+            val isBoost = offset >= maxOffset || maxOffset <= -maxOffset
+            val isInUpChannel = offset >= minOffset
+            val isInDownChannel = offset <= -minOffset
+
+            println("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}" +
+                    "Price isInUpChannel = $isInUpChannel, isInDownChannel = $isInDownChannel, isBoost = $isBoost" +
+                    "${ConsoleColors.RESET}"
+            )
+
+            if (!ordersThread.isAlive && (init || isInUpChannel || isInDownChannel)) {
+                ordersThread = Thread {
+                    try { updateOrders(currentPrice, isBoost) }
+                    catch (exception: Exception) {
+                        exception.printStackTrace()
+                        ordersThread.stop()
+                    }
                 }.apply { start() }
             }
         }
@@ -466,14 +500,16 @@ object BitmexClothoBot {
         }?.let { currentPrice - it.key }
     }
 
-    private fun updateOrders(curPrice: BigDecimal) {
+    private fun updateOrders(curPrice: BigDecimal, isBoost: Boolean) {
         val direction = when {
             curPrice > oldPrice -> BitmexDirection.Up
             curPrice < oldPrice -> BitmexDirection.Down
             else -> return
         }
 
-        val orderSide = if (direction == BitmexDirection.Up) OrderType.ASK else OrderType.BID
+        val orderSide = if (direction == BitmexDirection.Up && !isBoost) {
+            OrderType.ASK
+        } else OrderType.BID
         val stopOrderSide = if (orderSide == OrderType.BID) OrderType.ASK else OrderType.BID;
         val price = curPrice + if (orderSide == OrderType.ASK) priceOffset else -priceOffset;
 

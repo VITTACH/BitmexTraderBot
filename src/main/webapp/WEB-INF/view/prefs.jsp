@@ -39,8 +39,12 @@
         </tr>
         <tr><td><br></td></tr>
         <tr>
-            <td>Price sensitive:</td>
-            <td><form:input path="priceSensitive"/></td>
+            <td>MIN price sensitive:</td>
+            <td><form:input path="minPriceSensitive"/></td>
+        </tr>
+        <tr>
+            <td>MAX price sensitive:</td>
+            <td><form:input path="maxPriceSensitive"/></td>
         </tr>
         <tr>
             <td>Count of orders:</td>
