@@ -1,4 +1,4 @@
-package com.trade.exchanges.bitmex.service
+package com.trade.exchanges.bitmex.services.base
 
 import si.mazi.rescu.ParamsDigest
 import si.mazi.rescu.RestProxyFactory

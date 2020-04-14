@@ -1,9 +1,10 @@
-package com.trade.exchanges.bitmex.service
+package com.trade.exchanges.bitmex.services
 
 import com.trade.exchanges.bitmex.BitmexExchange
-import com.trade.exchanges.bitmex.dto.marketdata.BitmexPublicOrder
 import com.trade.exchanges.bitmex.dto.marketdata.BitmexTicker
+import com.trade.exchanges.bitmex.dto.marketdata.getSide
 import com.trade.exchanges.bitmex.dto.privatedata.*
+import com.trade.exchanges.bitmex.services.base.BitmexBaseService
 import com.trade.exchanges.core.CurrencyPair
 import com.trade.exchanges.core.orders.LimitOrder
 import com.trade.exchanges.core.orders.OrderType
@@ -12,15 +13,15 @@ import java.math.BigDecimal
 import java.util.*
 
 
-class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(exchange) {
+class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(exchange), BitmexTradeService {
 
     @Throws(IOException::class)
-    fun getTicker(symbol: String): List<BitmexTicker>? {
+    override fun getTicker(symbol: String): List<BitmexTicker>? {
         return bitmex.getTicker(symbol)
     }
 
     @Throws(IOException::class)
-    fun getOrderBook(pair: CurrencyPair, oSide: OrderType): List<LimitOrder>? {
+    override fun getOrderBook(pair: CurrencyPair, oSide: OrderType): List<LimitOrder>? {
         val orders = ArrayList<LimitOrder>()
         for (order in bitmex.getDepth(pair.toString(), null)) {
             if (order.getSide() == oSide) {
@@ -35,12 +36,8 @@ class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(ex
         return orders
     }
 
-    private fun BitmexPublicOrder.getSide(): OrderType {
-        return if (side.equals("Sell", true)) OrderType.ASK else OrderType.BID
-    }
-
     @Throws(IOException::class)
-    fun getBitmexOrders(): List<BitmexPrivateOrder> {
+    override fun getBitmexOrders(): List<BitmexPrivateOrder> {
         val orders = ArrayList<BitmexPrivateOrder>()
         var i = 0
         while (orders.size % 500 == 0) {
@@ -62,7 +59,7 @@ class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(ex
     }
 
     @Throws(IOException::class)
-    fun placeBitmexOrder(order: LimitOrder, type: BitmexOrderType, params: BitmexOrderParams): String {
+    override fun placeBitmexOrder(order: LimitOrder, type: BitmexOrderType, params: BitmexOrderParams): String {
 
         val symbol = order.pair.toString()
         val quantity = order.amount?.toInt()
@@ -140,23 +137,23 @@ class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(ex
     }
 
     @Throws(IOException::class)
-    fun cancelMyBitmexOrder(code: String?): List<BitmexPrivateOrder>? {
+    override fun cancelMyBitmexOrder(code: String?): List<BitmexPrivateOrder>? {
         return bitmex.cancelOpenOrder(apiKey, exchange.timeNonceFactory, signature, code)
     }
 
     @Throws(IOException::class)
-    fun cancelOrderBySymbol(code: String?): List<BitmexPrivateOrder>? {
+    override fun cancelOrderBySymbol(code: String?): List<BitmexPrivateOrder>? {
         return bitmex.cancelAllOrders(apiKey, exchange.timeNonceFactory, signature, code)
     }
 
     @Throws(IOException::class)
-    fun getOpenPositions(): List<BitmexPosition>? {
+    override fun getOpenPositions(): List<BitmexPosition>? {
         val filter = "{\"isOpen\":true}"
         return bitmex.getPositions(apiKey, exchange.timeNonceFactory, signature, filter);
     }
 
     @Throws(IOException::class)
-    fun closePosition(symbol: String): BitmexPosition {
+    override fun closePosition(symbol: String): BitmexPosition {
         return bitmex.closePosition(apiKey, exchange.timeNonceFactory, signature, symbol)
     }
 

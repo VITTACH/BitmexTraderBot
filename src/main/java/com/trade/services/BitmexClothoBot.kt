@@ -8,7 +8,7 @@ import com.trade.bots.telegram.service.TelegramMsgService
 import com.trade.exchanges.bitmex.BitmexDigest
 import com.trade.exchanges.bitmex.BitmexExchange
 import com.trade.exchanges.bitmex.dto.privatedata.*
-import com.trade.exchanges.bitmex.service.BitmexTradeServiceRaw
+import com.trade.exchanges.bitmex.services.BitmexTradeService
 import com.trade.exchanges.core.CurrencyPair
 import com.trade.exchanges.core.orders.LimitOrder
 import com.trade.exchanges.core.orders.OrderType
@@ -53,54 +53,76 @@ enum class WebSocketStatus {
     Closed
 }
 
-object BitmexClothoBot {
-    private const val WS_TIMEOUT_TIME = 120 * 1000
-    private const val POSITION_PROFIT_SCALE = 5
-    private const val POSITION_LOSS_SCALE = 3
+class BitmexClothoBot(prefModel: PrefModel) {
+    companion object {
+        private const val WS_TIMEOUT_TIME = 120 * 1000
+        private const val POSITION_PROFIT_SCALE = 5
+        private const val POSITION_LOSS_SCALE = 3
+    }
 
-    private lateinit var apiKey: String
-    private lateinit var secretKey: String
-    private lateinit var url: String
-    private lateinit var wsUri: URI
+    private val isInit = AtomicBoolean(true)
 
-    private lateinit var telegramChatId: String
-    private lateinit var telegramToken: String
-    private lateinit var telegramService: TelegramMsgService
-
-    private lateinit var tradeService: BitmexTradeServiceRaw
-
-    private var watcherThread: Thread = Thread()
-    private var ordersThread: Thread = Thread()
-    private var positionsThread: Thread = Thread()
+    private val apiKey: String
+    private val secretKey: String
+    private val url: String
+    private val wsUri: URI
 
     private val openedPosOrders = ConcurrentHashMap<BigDecimal, String>()
     private val openedMainOrders = ConcurrentHashMap<BigDecimal, String>()
     private val openedStopOrders = ConcurrentHashMap<BigDecimal, String>()
 
+    private val telegramChatId: String
+    private val telegramToken: String
+    private val telegramService: TelegramMsgService
+
+    private val tradeService: BitmexTradeService
+
+    private var posLastUpdTime = 0L
+    private var wsLastUpdTime = 0L
+    private var countOfOrders = 0
+
+    private var watcherThread: Thread = Thread()
+    private var ordersThread: Thread = Thread()
+    private var positionsThread: Thread = Thread()
+
     private val objMapper = ObjectMapper()
     private var socketState = WebSocketStatus.Closed
-    private var webSocket: WebSocketClient? = null;
+    private var webSocket: WebSocketClient? = null
 
     private var oldPrice = BigDecimal.ZERO
     private var oldDirection = BitmexDirection.None
 
-    private lateinit var minPriceSensitive: BigDecimal
-    private lateinit var maxPriceSensitive: BigDecimal
-    private lateinit var priceOffset: BigDecimal
-    private lateinit var priceStep: BigDecimal
-    private lateinit var orderVol: BigDecimal
-    private lateinit var pair: CurrencyPair
+    private val minPriceSensitive: BigDecimal
+    private val maxPriceSensitive: BigDecimal
+    private val orderVolume: BigDecimal
+    private val priceOffset: BigDecimal
+    private val priceStep: BigDecimal
+    private val pair: CurrencyPair
 
-    private lateinit var stopLossOffset: BigDecimal
-    private lateinit var stopPriceStep: BigDecimal
-    private lateinit var stopPriceBias: BigDecimal
+    private val stopLossOffset: BigDecimal
+    private val stopPriceStep: BigDecimal
+    private val stopPriceBias: BigDecimal
 
-    private var countOfOrders = 0
-
-    private var posLastUpdTime = 0L
-    private var wsLastUpdTime = 0L
-
-    private val isInit = AtomicBoolean(true)
+    init {
+        url = "https://${prefModel.url}"
+        wsUri = URI("wss://${prefModel.url}/realtime")
+        apiKey = prefModel.apiKey
+        secretKey = prefModel.secretKey
+        tradeService = BitmexExchange(apiKey, secretKey, url).pollingTradeService
+        telegramChatId = prefModel.telegramChatId
+        telegramToken = prefModel.telegramToken
+        telegramService = TelegramCore(telegramToken).messageService
+        minPriceSensitive = prefModel.minPriceSensitive
+        maxPriceSensitive = prefModel.maxPriceSensitive
+        priceOffset = prefModel.priceOffset
+        priceStep = prefModel.priceStep
+        pair = prefModel.pair
+        stopLossOffset = prefModel.stopLossOffset
+        stopPriceStep = prefModel.stopPriceStep
+        stopPriceBias = prefModel.stopPriceBias
+        orderVolume = prefModel.orderVol
+        countOfOrders = prefModel.countOfOrders
+    }
 
     fun close() {
         watcherThread.stop()
@@ -109,34 +131,7 @@ object BitmexClothoBot {
         webSocket?.closeBlocking()
     }
 
-    private fun init(prefModel: PrefModel) {
-        apiKey = prefModel.apiKey
-        secretKey = prefModel.secretKey;
-        url = "https://${prefModel.url}"
-        wsUri = URI("wss://${prefModel.url}/realtime")
-
-        tradeService = BitmexExchange(apiKey, secretKey, url).pollingTradeService
-
-        telegramChatId = prefModel.telegramChatId
-        telegramToken = prefModel.telegramToken
-        telegramService = TelegramCore(telegramToken).messageService
-
-        minPriceSensitive = prefModel.minPriceSensitive
-        maxPriceSensitive = prefModel.maxPriceSensitive
-        priceOffset = prefModel.priceOffset
-        priceStep = prefModel.priceStep
-        pair = prefModel.pair
-
-        stopLossOffset = prefModel.stopLossOffset
-        stopPriceStep = prefModel.stopPriceStep
-        stopPriceBias = prefModel.stopPriceBias
-
-        orderVol = prefModel.orderVol
-        countOfOrders = prefModel.countOfOrders
-    }
-
-    fun start(prefModel: PrefModel) {
-        init(prefModel)
+    fun start() {
         while (!cancelAllOpenedOrders(pair.toString()));
 
         webSocket = object : WebSocketClient(wsUri) {
@@ -192,7 +187,7 @@ object BitmexClothoBot {
                 println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
                 telegramService.sendMessage(telegramChatId, message)
                 webSocket?.reconnect()
-                Thread.sleep(60000)
+                Thread.sleep(10000)
                 if (socketState == WebSocketStatus.Closed) {
                     break
                 }
@@ -201,8 +196,7 @@ object BitmexClothoBot {
             println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
             telegramService.sendMessage(telegramChatId, message)
             while (!cancelAllOpenedOrders(pair.toString()));
-        }
-        watcherThread.start()
+        }.apply { start() }
     }
 
     // -- START POSITIONS
@@ -255,7 +249,7 @@ object BitmexClothoBot {
     }
 
     private fun placeOrder(pair: CurrencyPair, side: OrderType, quantity: Double) {
-        val order1 = tradeService.getOrderBook(pair, side)?.get(0);
+        val order1 = tradeService.getOrderBook(pair, side)?.get(0)
         val volume = order1?.amount?.min(BigDecimal(quantity))
         val otherSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID
         val order = LimitOrder(otherSide, volume, pair, order1?.price, null)
@@ -518,8 +512,8 @@ object BitmexClothoBot {
         oldDirection = direction
         oldPrice = curPrice
 
-        placeOrders(orderSide, price, BitmexOrderType.Limit, orderVol)
-        placeOrders(stopOrderSide, price, BitmexOrderType.StopLimit, orderVol)
+        placeOrders(orderSide, price, BitmexOrderType.Limit, orderVolume)
+        placeOrders(stopOrderSide, price, BitmexOrderType.StopLimit, orderVolume)
     }
 
     private fun Double.format(digits: Int) = String.format("%.${digits}f", this)
