@@ -57,7 +57,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
     companion object {
         private const val WS_TIMEOUT_TIME = 120 * 1000
         private const val POSITION_PROFIT_SCALE = 5
-        private const val POSITION_LOSS_SCALE = 3
+        private const val POSITION_LOSS_SCALE = 60
     }
 
     private val isInit = AtomicBoolean(true)
@@ -176,32 +176,39 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private fun startWatchDog() {
         watcherThread = Thread {
+            var olPrintTime = 0L
             while (true) {
-                if (System.currentTimeMillis() - wsLastUpdTime > WS_TIMEOUT_TIME) {
+                val wsTimeDiff = System.currentTimeMillis() - wsLastUpdTime
+                if (wsLastUpdTime > 0 && wsTimeDiff >= WS_TIMEOUT_TIME) {
                     socketState = WebSocketStatus.Closed
                 }
+
                 if (socketState == WebSocketStatus.Opened) {
+                    System.currentTimeMillis().also { time ->
+                        if (time - olPrintTime > 60000) {
+                            println("${ConsoleColors.PURPLE_BACKGROUND_BRIGHT}" +
+                                    "${Date()} WatchDOG: continue, timeDiff = $wsTimeDiff" +
+                                    "${ConsoleColors.RESET}"
+                            )
+                            olPrintTime = time
+                        }
+                    }
                     continue
                 }
-                val message = "WatchDOG: WebSocket reconnect!"
+
+                val message = "${Date()} WatchDOG: WebSocket reconnect!"
                 println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
                 telegramService.sendMessage(telegramChatId, message)
+
                 webSocket?.reconnect()
-                Thread.sleep(10000)
-                if (socketState == WebSocketStatus.Closed) {
-                    break
-                }
+                Thread.sleep(30000)
             }
-            val message = "WatchDOG: Can not reconnect socket"
-            println("${ConsoleColors.GREEN_BOLD_BRIGHT}$message${ConsoleColors.RESET}")
-            telegramService.sendMessage(telegramChatId, message)
-            while (!cancelAllOpenedOrders(pair.toString()));
         }.apply { start() }
     }
 
     // -- START POSITIONS
     private fun closePositions() {
-        val positions = tradeService.getOpenPositions() ?: return;
+        val positions = tradeService.getOpenPositions() ?: return
 
         if (positions.isEmpty()) {
             if (openedPosOrders.isNotEmpty()) {
@@ -303,10 +310,16 @@ class BitmexClothoBot(prefModel: PrefModel) {
             val orders = if (stop) openedStopOrders else openedMainOrders
 
             if (hasNearOrder(orderPrice, orders)) {
-                println("${ConsoleColors.BLUE}Has near orders in: ${orders.keys}, at price: $orderPrice${ConsoleColors.RESET}")
+                println("${ConsoleColors.BLUE}" +
+                        "Has near orders in: ${orders.keys}, at price: $orderPrice" +
+                        "${ConsoleColors.RESET}"
+                )
                 continue
             } else {
-                println("${ConsoleColors.BLACK}No near orders in: ${orders.keys}, at price: $orderPrice${ConsoleColors.RESET}")
+                println("${ConsoleColors.BLACK}" +
+                        "No near orders in: ${orders.keys}, at price: $orderPrice" +
+                        "${ConsoleColors.RESET}"
+                )
             }
 
             val order = LimitOrder(side, orderVolume, pair, orderPrice, triggerPrice)
@@ -385,7 +398,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 }
             }
         } catch (exception: Exception) {
-            while(!cancelAllOpenedOrders(pair.toString()));
+            while (!cancelAllOpenedOrders(pair.toString()));
             success = false
         }
 
@@ -445,8 +458,9 @@ class BitmexClothoBot(prefModel: PrefModel) {
             return
         }
         positionsThread = Thread {
-            try { closePositions() }
-            catch (exception: Exception) {
+            try {
+                closePositions()
+            } catch (exception: Exception) {
                 exception.printStackTrace()
                 positionsThread.stop()
             }
@@ -460,24 +474,29 @@ class BitmexClothoBot(prefModel: PrefModel) {
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
         } else if (oldPrice != currentPrice) {
-            val offset = orderPriceOffset(currentPrice) ?: return
             val minOffset = priceOffset + minPriceSensitive
             val maxOffset = priceOffset + maxPriceSensitive
+            val offset = orderPriceOffset(currentPrice)
             val init = isInit.getAndSet(false)
 
-            val isBoost = offset >= maxOffset || maxOffset <= -maxOffset
-            val isInUpChannel = offset >= minOffset
-            val isInDownChannel = offset <= -minOffset
-
-            println("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}" +
-                    "Price isInUpChannel = $isInUpChannel, isInDownChannel = $isInDownChannel, isBoost = $isBoost" +
-                    "${ConsoleColors.RESET}"
-            )
+            val isBoost = offset?.let { !(it in -maxOffset..maxOffset) } ?: false
+            val isInUpChannel = offset?.let { it >= minOffset } ?: false
+            val isInDownChannel = offset?.let { offset <= -minOffset } ?: false
 
             if (!ordersThread.isAlive && (init || isInUpChannel || isInDownChannel)) {
+
+                val message = (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
+                        (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
+                        (if (isBoost) "isBoost = $isBoost, " else "") +
+                        "currentPrice = $currentPrice, oldPrice = $oldPrice, " +
+                        "diff = ${(currentPrice - oldPrice).abs()}\n"
+
+                print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
+
                 ordersThread = Thread {
-                    try { updateOrders(currentPrice, isBoost) }
-                    catch (exception: Exception) {
+                    try {
+                        updateOrders(currentPrice, isBoost)
+                    } catch (exception: Exception) {
                         exception.printStackTrace()
                         ordersThread.stop()
                     }
