@@ -78,6 +78,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private val tradeService: BitmexTradeService
 
     private var posLastUpdTime = 0L
+    private var orderLastRequestTime = 0L
     private var wsLastUpdTime = 0L
     private var countOfOrders = 0
 
@@ -433,8 +434,6 @@ class BitmexClothoBot(prefModel: PrefModel) {
     }
 
     private fun onHandleMessages(message: String) {
-        wsLastUpdTime = System.currentTimeMillis()
-
         val response = when {
             message.contains("table\":\"trade") -> objMapper.readValue(message, TradeWSResponse::class.java)
             message.contains("table\":\"position") -> objMapper.readValue(message, PositionWSResponse::class.java);
@@ -474,24 +473,33 @@ class BitmexClothoBot(prefModel: PrefModel) {
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
         } else if (oldPrice != currentPrice) {
+            wsLastUpdTime = System.currentTimeMillis();
+
             val minOffset = priceOffset + minPriceSensitive
             val maxOffset = priceOffset + maxPriceSensitive
             val offset = orderPriceOffset(currentPrice)
             val init = isInit.getAndSet(false)
 
-            val isBoost = offset?.let { !(it in -maxOffset..maxOffset) } ?: false
             val isInUpChannel = offset?.let { it >= minOffset } ?: false
-            val isInDownChannel = offset?.let { offset <= -minOffset } ?: false
+            val isInDownChannel = offset?.let { it <= -minOffset } ?: false
+            val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
+
+            synchronisedOrders()
+
+            val info = "${Date()} " +
+                    (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
+                    (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
+                    (if (isBoost) "isBoost = $isBoost, " else "") +
+                    "currentPrice = $currentPrice, " +
+                    "oldPrice = $oldPrice, " +
+                    "diff = ${(currentPrice - oldPrice).abs()}, " +
+                    "offset = $offset, " +
+                    "mainOrders = ${openedMainOrders.keys}, " +
+                    "stopOrders = ${openedStopOrders.keys}, " +
+                    "alive = ${ordersThread.isAlive}\n"
 
             if (!ordersThread.isAlive && (init || isInUpChannel || isInDownChannel)) {
-
-                val message = (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
-                        (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
-                        (if (isBoost) "isBoost = $isBoost, " else "") +
-                        "currentPrice = $currentPrice, oldPrice = $oldPrice, " +
-                        "diff = ${(currentPrice - oldPrice).abs()}\n"
-
-                print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
+                print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
 
                 ordersThread = Thread {
                     try {
@@ -501,6 +509,34 @@ class BitmexClothoBot(prefModel: PrefModel) {
                         ordersThread.stop()
                     }
                 }.apply { start() }
+            } else {
+                print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+            }
+        }
+    }
+
+    private fun synchronisedOrders() {
+        if (wsLastUpdTime - orderLastRequestTime > 5 * 60000L) {
+            val bitmexOrderIds = tradeService.getBitmexOrders().map { it.id }
+            println("${Date()} bitmexOrderIds = $bitmexOrderIds, " +
+                    "openedMainOrders = ${openedMainOrders.keys}, " +
+                    "openedStopOrders = ${openedStopOrders.keys}"
+            )
+            synchronisedOrders(openedMainOrders, bitmexOrderIds)
+            synchronisedOrders(openedStopOrders, bitmexOrderIds)
+            orderLastRequestTime = wsLastUpdTime
+        }
+    }
+
+    private fun synchronisedOrders(
+            orders: ConcurrentHashMap<BigDecimal, String>,
+            bitmexOrderIds: List<String?>
+    ) {
+        val iterator = orders.iterator()
+        while (iterator.hasNext()) {
+            val orderEntry = iterator.next()
+            if (bitmexOrderIds.find { it == orderEntry.value } == null) {
+                iterator.remove()
             }
         }
     }
