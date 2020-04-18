@@ -209,12 +209,6 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private fun closePositions() {
         val positions = tradeService.getOpenPositions() ?: return
 
-        if (positions.isEmpty()) {
-            if (openedPosOrders.isNotEmpty()) {
-                cancelOrders(openedPosOrders, isPosition = true);
-            }
-        }
-
         val curPrice = tradeService.getTicker(pair.toString())?.get(0)?.lastPrice ?: return
 
         for (position in positions) {
@@ -362,8 +356,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private fun cancelOrders(
             orders: ConcurrentHashMap<BigDecimal, String>,
-            price: BigDecimal = BigDecimal.ZERO,
-            isPosition: Boolean = false
+            price: BigDecimal = BigDecimal.ZERO
     ) {
         println("${Date()} WS -> Start cancel order. Total size = ${orders.size}")
 
@@ -384,10 +377,8 @@ class BitmexClothoBot(prefModel: PrefModel) {
                         "${ConsoleColors.RESET}"
                 )
 
-                if (isHigher || isLowest || isNear || isPosition) {
-                    if (!isPosition) {
-                        cancelStopOrders(orderEntry.key)
-                    }
+                if (isHigher || isLowest || isNear) {
+                    cancelStopOrders(orderEntry.key)
                     tradeService.cancelMyBitmexOrder(orderEntry.value)
                     iterator.remove()
                     orderCount++
@@ -517,12 +508,14 @@ class BitmexClothoBot(prefModel: PrefModel) {
             val openOrders = tradeService.getBitmexOrders().map { it.id }
             println("${Date()} BEFORE SYNCHRONISED " +
                     "bitmexOrderIds = $openOrders, " +
+                    "openedPosOrders = ${openedPosOrders.keys}, " +
                     "openedMainOrders = ${openedMainOrders.keys}, " +
                     "openedStopOrders = ${openedStopOrders.keys}"
             )
 
             synchronisedOrders(openedMainOrders, openOrders)
             synchronisedOrders(openedStopOrders, openOrders)
+            synchronisedOrders(openedPosOrders, openOrders)
 
             orderLastRequestTime = wsLastUpdTime
         }
