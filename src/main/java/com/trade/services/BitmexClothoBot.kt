@@ -239,7 +239,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 "entry = <b>$entryPrice</b>, " +
                 "price = <b>$myPrice</b>"
 
-        println("${ConsoleColors.BLACK_UNDERLINED}${Date()} WS -> $message${ConsoleColors.RESET}")
+        //println("${ConsoleColors.BLACK_UNDERLINED}${Date()} WS -> $message${ConsoleColors.RESET}")
 
         if (isLongProfit || isLongLoss || isShortProfit || isShortLoss) {
             telegramService.sendMessage(telegramChatId, "Close position. $message")
@@ -403,6 +403,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private fun cancelStopOrders(price: BigDecimal) {
         val orderOffsets = HashMap<BigDecimal, Pair<BigDecimal, String>>()
+
         var minimalOffset = BigDecimal(Int.MAX_VALUE)
         for (order in openedStopOrders) {
             val offset = (price - order.key).abs()
@@ -411,6 +412,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 minimalOffset = offset
             }
         }
+
         orderOffsets[minimalOffset]?.let {
             tradeService.cancelMyBitmexOrder(it.second)
             openedStopOrders.remove(it.first)
@@ -451,15 +453,16 @@ class BitmexClothoBot(prefModel: PrefModel) {
         if (System.currentTimeMillis() - posLastUpdTime < 1000 || positionsThread.isAlive) {
             return
         }
+
         positionsThread = Thread {
             try {
+                posLastUpdTime = System.currentTimeMillis()
                 closePositions()
             } catch (exception: Exception) {
                 exception.printStackTrace()
                 positionsThread.stop()
             }
         }.apply { start() }
-        posLastUpdTime = System.currentTimeMillis()
     }
 
     private fun updLastPrice(currentPrice: BigDecimal?, tradeTime: String?) {
@@ -469,12 +472,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
-        } else if (oldPrice != currentPrice) {
-            if (ordersThread.isAlive) return
-            wsLastUpdTime = System.currentTimeMillis();
-
+        } else if (oldPrice != currentPrice && !ordersThread.isAlive) {
             ordersThread = Thread {
                 try {
+                    wsLastUpdTime = System.currentTimeMillis()
                     updateOrders(currentPrice)
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -491,9 +492,11 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val isInDownChannel = offset?.let { it <= -(priceOffset + minPriceSensitive) } ?: false
         val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
 
-        synchronisedOrders()
+        if (wsLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
+            synchronisedOrders()
+        }
 
-        val info = "${Date()} Handle incoming trade " +
+        val message = "${Date()} Handle incoming trade " +
                 (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
                 (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
                 (if (isBoost) "isBoost = $isBoost, " else "") +
@@ -505,30 +508,28 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 "stopOrders = ${openedStopOrders.keys}\n"
 
         if (offset == null || isInUpChannel || isInDownChannel) {
-            print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+            print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
             updateOpenOrders(currentPrice, isBoost)
         } else {
-            print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+            print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
         }
     }
 
     private fun synchronisedOrders() {
-        if (wsLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
-            val openOrders = tradeService.getBitmexOrders().map { it.id }
-            val message = "${Date()} BEFORE SYNCHRONISED " +
-                    "bitmexOrderIds = $openOrders, " +
-                    "openedPosOrders = ${openedPosOrders.keys}, " +
-                    "openedMainOrders = ${openedMainOrders.keys}, " +
-                    "openedStopOrders = ${openedStopOrders.keys}"
+        val bitmexOrderIds = tradeService.getBitmexOrders().map { it.id }
+        val message = "${Date()} BEFORE SYNCHRONISED " +
+                "bitmexOrderIds = $bitmexOrderIds, " +
+                "openedPosOrders = ${openedPosOrders.keys}, " +
+                "openedMainOrders = ${openedMainOrders.keys}, " +
+                "openedStopOrders = ${openedStopOrders.keys}"
 
-            println(message)
+        println(message)
 
-            synchronisedOrders(openedMainOrders, openOrders)
-            synchronisedOrders(openedStopOrders, openOrders)
-            synchronisedOrders(openedPosOrders, openOrders)
+        synchronisedOrders(openedMainOrders, bitmexOrderIds)
+        synchronisedOrders(openedStopOrders, bitmexOrderIds)
+        synchronisedOrders(openedPosOrders, bitmexOrderIds)
 
-            orderLastRequestTime = wsLastUpdTime
-        }
+        orderLastRequestTime = wsLastUpdTime
     }
 
     private fun updateOpenOrders(curPrice: BigDecimal, isBoost: Boolean) {
