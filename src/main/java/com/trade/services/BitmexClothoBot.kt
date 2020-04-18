@@ -54,6 +54,7 @@ enum class WebSocketStatus {
 
 class BitmexClothoBot(prefModel: PrefModel) {
     companion object {
+        private const val SYNC_PERIOD = 180 * 1000
         private const val WS_TIMEOUT_TIME = 120 * 1000
         private const val POSITION_PROFIT_SCALE = 5
         private const val POSITION_LOSS_SCALE = 60
@@ -226,10 +227,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private fun closePosition(pair: CurrencyPair, curPrice: BigDecimal, entryPrice: BigDecimal, amount: Double) {
         val side = if (amount >= 0) OrderType.BID else OrderType.ASK
         val entryPrice = entryPrice.toDouble()
-        val curPrice = curPrice.toDouble()
+        val myPrice = curPrice.toDouble()
 
-        val realise = amount.absoluteValue * (1 / entryPrice - 1 / curPrice)
-        val profitPercent = ((entryPrice - curPrice) / ((entryPrice + curPrice) / 2f)) * 100 * amount.absoluteValue
+        val realise = amount.absoluteValue * (1 / entryPrice - 1 / myPrice)
+        val profitPercent = ((entryPrice - myPrice) / ((entryPrice + myPrice) / 2f)) * 100 * amount.absoluteValue
 
         val isLongProfit = side == OrderType.BID && profitPercent <= -POSITION_PROFIT_SCALE
         val isShortProfit = side == OrderType.ASK && profitPercent >= POSITION_PROFIT_SCALE
@@ -237,7 +238,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val isShortLoss = side == OrderType.ASK && profitPercent <= -POSITION_LOSS_SCALE
 
         val message = "Position: side = <b>$side</b>, percent = <b>$profitPercent</b>, " +
-                "realise = <b>${realise.format(5)}</b>, entry = <b>$entryPrice</b>, price = <b>$curPrice</b>\n" +
+                "realise = <b>${realise.format(5)}</b>, entry = <b>$entryPrice</b>, price = <b>$myPrice</b>\n" +
                 "Position with profit = <b>${isLongProfit || isShortProfit}</b>"
 
         // println("${ConsoleColors.GREEN} ${Date()} WS -> $message ${ConsoleColors.RESET}")
@@ -245,7 +246,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         if (isLongProfit || isLongLoss || isShortProfit || isShortLoss) {
             telegramService.sendMessage(telegramChatId, "Close position. $message")
             try {
-                placeOrder(pair, side, amount.absoluteValue)
+                placeOrder(pair, curPrice, side, amount.absoluteValue)
                 println("${ConsoleColors.PURPLE} ${Date()} WS <- Close position. $message ${ConsoleColors.RESET}")
             } catch (exception: Exception) {
                 exception.printStackTrace()
@@ -253,11 +254,11 @@ class BitmexClothoBot(prefModel: PrefModel) {
         }
     }
 
-    private fun placeOrder(pair: CurrencyPair, side: OrderType, quantity: Double) {
-        val order1 = tradeService.getOrderBook(pair, side)?.get(0)
-        val volume = order1?.amount?.min(BigDecimal(quantity))
+    private fun placeOrder(pair: CurrencyPair, price: BigDecimal, side: OrderType, amount: Double) {
+        val orderFromBook = tradeService.getOrderBook(pair, side)?.get(0)
+        val volume = orderFromBook?.amount?.min(BigDecimal(amount));
         val otherSide = if (side == OrderType.BID) OrderType.ASK else OrderType.BID
-        val order = LimitOrder(otherSide, volume, pair, order1?.price, null)
+        val order = LimitOrder(otherSide, volume, pair, price, null)
         val param = BitmexOrderParams(
                 expire = BitmexOrderExpire.GoodTillCancel,
                 postOnly = false,
@@ -266,9 +267,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 closeOnTrigger = false
         )
         val orderId = tradeService.placeBitmexOrder(order, BitmexOrderType.Limit, param)
-        order.price?.let { price ->
-            openedPosOrders[price] = orderId
-        }
+        order.price?.let { openedPosOrders[it] = orderId }
     }
     // -- END POSITIONS
 
@@ -498,8 +497,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                         "diff = ${(currentPrice - oldPrice).abs()}, " +
                         "offset = $offset, " +
                         "mainOrders = ${openedMainOrders.keys}, " +
-                        "stopOrders = ${openedStopOrders.keys}, " +
-                        "alive = ${ordersThread.isAlive}\n"
+                        "stopOrders = ${openedStopOrders.keys}\n"
 
                 if (offset == null || isInUpChannel || isInDownChannel) {
                     print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
@@ -515,7 +513,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
     }
 
     private fun synchronisedOrders() {
-        if (wsLastUpdTime - orderLastRequestTime > 5 * 60000L) {
+        if (wsLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
             val openOrders = tradeService.getBitmexOrders().map { it.id }
             println("${Date()} BEFORE SYNCHRONISED " +
                     "bitmexOrderIds = $openOrders, " +
