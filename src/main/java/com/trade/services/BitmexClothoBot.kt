@@ -20,7 +20,6 @@ import java.math.BigDecimal
 import java.net.URI
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.absoluteValue
 
 
@@ -59,8 +58,6 @@ class BitmexClothoBot(prefModel: PrefModel) {
         private const val POSITION_PROFIT_SCALE = 5
         private const val POSITION_LOSS_SCALE = 60
     }
-
-    private val isInit = AtomicBoolean(true)
 
     private val apiKey: String
     private val secretKey: String
@@ -473,67 +470,86 @@ class BitmexClothoBot(prefModel: PrefModel) {
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
         } else if (oldPrice != currentPrice) {
+            if (ordersThread.isAlive) return
             wsLastUpdTime = System.currentTimeMillis();
 
-            val minOffset = priceOffset + minPriceSensitive
-            val maxOffset = priceOffset + maxPriceSensitive
-            val offset = orderPriceOffset(currentPrice)
-            val init = isInit.getAndSet(false)
-
-            val isInUpChannel = offset?.let { it >= minOffset } ?: false
-            val isInDownChannel = offset?.let { it <= -minOffset } ?: false
-            val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
-
-            val info = "${Date()} " +
-                    (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
-                    (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
-                    (if (isBoost) "isBoost = $isBoost, " else "") +
-                    "currentPrice = $currentPrice, " +
-                    "oldPrice = $oldPrice, " +
-                    "diff = ${(currentPrice - oldPrice).abs()}, " +
-                    "offset = $offset, " +
-                    "mainOrders = ${openedMainOrders.keys}, " +
-                    "stopOrders = ${openedStopOrders.keys}, " +
-                    "alive = ${ordersThread.isAlive}\n"
-
-            if (ordersThread.isAlive) return
-
-            ordersThread = Thread {
-                try {
-                    synchronisedOrders()
-
-                    if (init || isInUpChannel || isInDownChannel) {
-                        print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
-                        updateOrders(currentPrice, isBoost)
-                    } else {
-                        print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
-                    }
-                } catch (exception: Exception) {
-                    exception.printStackTrace()
-                    ordersThread.stop()
-                }
-            }.apply { start() }
+            updateOrders(currentPrice)
         }
+    }
+
+    private fun updateOrders(currentPrice: BigDecimal) {
+        val offset = orderPriceOffset(currentPrice)
+        val maxOffset = priceOffset + maxPriceSensitive;
+
+        val isInUpChannel = offset?.let { it >= priceOffset + minPriceSensitive } ?: false
+        val isInDownChannel = offset?.let { it <= -(priceOffset + minPriceSensitive) } ?: false
+        val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
+
+        ordersThread = Thread {
+            try {
+                synchronisedOrders()
+
+                val info = "${Date()} " +
+                        (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
+                        (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
+                        (if (isBoost) "isBoost = $isBoost, " else "") +
+                        "currentPrice = $currentPrice, " +
+                        "oldPrice = $oldPrice, " +
+                        "diff = ${(currentPrice - oldPrice).abs()}, " +
+                        "offset = $offset, " +
+                        "mainOrders = ${openedMainOrders.keys}, " +
+                        "stopOrders = ${openedStopOrders.keys}, " +
+                        "alive = ${ordersThread.isAlive}\n"
+
+                if (offset == null || isInUpChannel || isInDownChannel) {
+                    print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+                    updateOpenOrders(currentPrice, isBoost)
+                } else {
+                    print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+                }
+            } catch (exception: Exception) {
+                exception.printStackTrace()
+                ordersThread.stop()
+            }
+        }.apply { start() }
     }
 
     private fun synchronisedOrders() {
         if (wsLastUpdTime - orderLastRequestTime > 5 * 60000L) {
-            val bitmexOrderIds = tradeService.getBitmexOrders().map { it.id }
+            val openOrders = tradeService.getBitmexOrders().map { it.id }
             println("${Date()} BEFORE SYNCHRONISED " +
-                    "bitmexOrderIds = $bitmexOrderIds, " +
+                    "bitmexOrderIds = $openOrders, " +
                     "openedMainOrders = ${openedMainOrders.keys}, " +
                     "openedStopOrders = ${openedStopOrders.keys}"
             )
 
-            synchronisedOrders(openedMainOrders, bitmexOrderIds)
-            synchronisedOrders(openedStopOrders, bitmexOrderIds)
+            synchronisedOrders(openedMainOrders, openOrders)
+            synchronisedOrders(openedStopOrders, openOrders)
 
-            println("${Date()} AFTER SYNCHRONISED " +
-                    "openedMainOrders = ${openedMainOrders.keys}, " +
-                    "openedStopOrders = ${openedStopOrders.keys}"
-            )
             orderLastRequestTime = wsLastUpdTime
         }
+    }
+
+    private fun updateOpenOrders(curPrice: BigDecimal, isBoost: Boolean) {
+        val direction = when {
+            curPrice > oldPrice -> BitmexDirection.Up
+            curPrice < oldPrice -> BitmexDirection.Down
+            else -> return
+        }
+
+        val orderSide = if (direction == BitmexDirection.Up && !isBoost) {
+            OrderType.ASK
+        } else OrderType.BID
+        val stopOrderSide = if (orderSide == OrderType.BID) OrderType.ASK else OrderType.BID;
+        val price = curPrice + if (orderSide == OrderType.ASK) priceOffset else -priceOffset;
+
+        cancelOrders(openedMainOrders, price)
+
+        oldDirection = direction
+        oldPrice = curPrice
+
+        placeOrders(orderSide, price, BitmexOrderType.Limit, orderVolume)
+        placeOrders(stopOrderSide, price, BitmexOrderType.StopLimit, orderVolume)
     }
 
     private fun synchronisedOrders(
@@ -555,28 +571,6 @@ class BitmexClothoBot(prefModel: PrefModel) {
         } else {
             openedMainOrders.maxBy { it.key }
         }?.let { currentPrice - it.key }
-    }
-
-    private fun updateOrders(curPrice: BigDecimal, isBoost: Boolean) {
-        val direction = when {
-            curPrice > oldPrice -> BitmexDirection.Up
-            curPrice < oldPrice -> BitmexDirection.Down
-            else -> return
-        }
-
-        val orderSide = if (direction == BitmexDirection.Up && !isBoost) {
-            OrderType.ASK
-        } else OrderType.BID
-        val stopOrderSide = if (orderSide == OrderType.BID) OrderType.ASK else OrderType.BID;
-        val price = curPrice + if (orderSide == OrderType.ASK) priceOffset else -priceOffset;
-
-        cancelOrders(openedMainOrders, price)
-
-        oldDirection = direction
-        oldPrice = curPrice
-
-        placeOrders(orderSide, price, BitmexOrderType.Limit, orderVolume)
-        placeOrders(stopOrderSide, price, BitmexOrderType.StopLimit, orderVolume)
     }
 
     private fun Double.format(digits: Int) = String.format("%.${digits}f", this)
