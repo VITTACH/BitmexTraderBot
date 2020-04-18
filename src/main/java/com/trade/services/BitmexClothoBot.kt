@@ -484,8 +484,6 @@ class BitmexClothoBot(prefModel: PrefModel) {
             val isInDownChannel = offset?.let { it <= -minOffset } ?: false
             val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
 
-            synchronisedOrders()
-
             val info = "${Date()} " +
                     (if (isInUpChannel) "isInUpChannel = $isInUpChannel, " else "") +
                     (if (isInDownChannel) "isInDownChannel = $isInDownChannel, " else "") +
@@ -498,32 +496,42 @@ class BitmexClothoBot(prefModel: PrefModel) {
                     "stopOrders = ${openedStopOrders.keys}, " +
                     "alive = ${ordersThread.isAlive}\n"
 
-            if (!ordersThread.isAlive && (init || isInUpChannel || isInDownChannel)) {
-                print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
+            if (ordersThread.isAlive) return
 
-                ordersThread = Thread {
-                    try {
+            ordersThread = Thread {
+                try {
+                    synchronisedOrders()
+
+                    if (init || isInUpChannel || isInDownChannel) {
+                        print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
                         updateOrders(currentPrice, isBoost)
-                    } catch (exception: Exception) {
-                        exception.printStackTrace()
-                        ordersThread.stop()
+                    } else {
+                        print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
                     }
-                }.apply { start() }
-            } else {
-                print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$info${ConsoleColors.RESET}")
-            }
+                } catch (exception: Exception) {
+                    exception.printStackTrace()
+                    ordersThread.stop()
+                }
+            }.apply { start() }
         }
     }
 
     private fun synchronisedOrders() {
         if (wsLastUpdTime - orderLastRequestTime > 5 * 60000L) {
             val bitmexOrderIds = tradeService.getBitmexOrders().map { it.id }
-            println("${Date()} bitmexOrderIds = $bitmexOrderIds, " +
+            println("${Date()} BEFORE SYNCHRONISED " +
+                    "bitmexOrderIds = $bitmexOrderIds, " +
                     "openedMainOrders = ${openedMainOrders.keys}, " +
                     "openedStopOrders = ${openedStopOrders.keys}"
             )
+
             synchronisedOrders(openedMainOrders, bitmexOrderIds)
             synchronisedOrders(openedStopOrders, bitmexOrderIds)
+
+            println("${Date()} AFTER SYNCHRONISED " +
+                    "openedMainOrders = ${openedMainOrders.keys}, " +
+                    "openedStopOrders = ${openedStopOrders.keys}"
+            )
             orderLastRequestTime = wsLastUpdTime
         }
     }
