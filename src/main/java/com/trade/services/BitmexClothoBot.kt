@@ -207,7 +207,11 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     // -- START POSITIONS
     private fun closePositions() {
-        val positions = tradeService.getOpenPositions() ?: return
+        val positions = tradeService.getOpenPositions() ?: return;
+
+        if (positions.isEmpty() && openedPosOrders.isNotEmpty()) {
+            cancelOrders(openedPosOrders, force = true)
+        }
 
         val curPrice = tradeService.getTicker(pair.toString())?.get(0)?.lastPrice ?: return
 
@@ -265,6 +269,9 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 closeOnTrigger = false
         )
         val orderId = tradeService.placeBitmexOrder(order, BitmexOrderType.Limit, param)
+
+        cancelOrders(openedPosOrders, force = true) // CANCEL OPEN POSITIONS
+
         order.price?.let { openedPosOrders[it] = orderId }
     }
     // -- END POSITIONS
@@ -305,16 +312,12 @@ class BitmexClothoBot(prefModel: PrefModel) {
             val orders = if (stop) openedStopOrders else openedMainOrders
 
             if (hasNearOrder(orderPrice, orders)) {
-                println("${ConsoleColors.BLUE}" +
-                        "Has near orders in: ${orders.keys}, at price: $orderPrice" +
-                        "${ConsoleColors.RESET}"
-                )
+                val message = "Has near in: ${orders.keys}, at price: $orderPrice"
+                println("${ConsoleColors.BLUE}$message${ConsoleColors.RESET}")
                 continue
             } else {
-                println("${ConsoleColors.BLACK}" +
-                        "No near orders in: ${orders.keys}, at price: $orderPrice" +
-                        "${ConsoleColors.RESET}"
-                )
+                val message = "No near in: ${orders.keys}, at price: $orderPrice"
+                println("${ConsoleColors.BLACK}$message${ConsoleColors.RESET}")
             }
 
             val order = LimitOrder(side, orderVolume, pair, orderPrice, triggerPrice)
@@ -360,7 +363,8 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private fun cancelOrders(
             orders: ConcurrentHashMap<BigDecimal, String>,
-            price: BigDecimal = BigDecimal.ZERO
+            price: BigDecimal = BigDecimal.ZERO,
+            force: Boolean = false
     ) {
         println("${Date()} WS -> Start cancel order. Total size = ${orders.size}")
 
@@ -385,8 +389,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
                 println("${ConsoleColors.YELLOW}$message${ConsoleColors.RESET}")
 
-                if (isHigher || isLowest || isNear) {
-                    cancelStopOrders(orderEntry.key)
+                if (isHigher || isLowest || isNear || force) {
+                    if (!force) {
+                        cancelStopOrders(orderEntry.key)
+                    }
                     tradeService.cancelMyBitmexOrder(orderEntry.value)
                     iterator.remove()
                     count++
