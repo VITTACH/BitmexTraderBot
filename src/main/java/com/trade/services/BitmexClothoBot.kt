@@ -54,7 +54,7 @@ enum class WebSocketStatus {
 
 class BitmexClothoBot(prefModel: PrefModel) {
     companion object {
-        private const val SYNC_PERIOD = 180 * 1000
+        private const val SYNC_PERIOD = 60 * 1000
         private const val WS_TIMEOUT_TIME = 120 * 1000
         private const val POSITION_PROFIT_SCALE = 5
         private const val POSITION_LOSS_SCALE = 60
@@ -510,6 +510,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
                 "oldPrice = $oldPrice, " +
                 "diff = ${(currentPrice - oldPrice).abs()}, " +
                 "offset = $offset, " +
+                "posOrders = ${openedPosOrders.keys}, " +
                 "mainOrders = ${openedMainOrders.keys}, " +
                 "stopOrders = ${openedStopOrders.keys}\n"
 
