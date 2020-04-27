@@ -8,4 +8,5 @@ import java.math.BigDecimal
 data class BitmexPosition(
         @JsonProperty("unrealisedRoePcnt") val unrealisedRoePcnt: BigDecimal?,
         @JsonProperty("avgEntryPrice") val avgEntryPrice: BigDecimal?,
-        @JsonProperty("currentQty") val currentQty: BigDecimal?)
+        @JsonProperty("currentQty") val currentQty: BigDecimal?
+)

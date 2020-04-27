@@ -52,12 +52,17 @@ enum class WebSocketStatus {
     Closed
 }
 
-class BitmexClothoBot(prefModel: PrefModel) {
+class BitmexClothoBot(private val prefModel: PrefModel) {
     companion object {
+        private val BIGDECIMAL_TWO = BigDecimal("2")
+        private val PROFIT_BALANCE = BigDecimal("0.0001")
+
         private const val SYNC_PERIOD = 60 * 1000
+        private const val BALANCE_PERIOD = 8 * 3600 * 1000
+        private const val HUNDRED_MILLIONS = 100_000_000
         private const val WS_TIMEOUT_TIME = 120 * 1000
         private const val POSITION_PROFIT_SCALE = 5
-        private const val POSITION_LOSS_SCALE = 60
+        private const val POSITION_LOSS_SCALE = 100
     }
 
     private val apiKey: String
@@ -75,9 +80,10 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private val tradeService: BitmexTradeService
 
-    private var posLastUpdTime = 0L
+    private var socketLastUpdTime = 0L
+    private var balanceLastUpdTime = 0L
+    private var positionLastUpdTime = 0L
     private var orderLastRequestTime = 0L
-    private var wsLastUpdTime = 0L
     private var countOfOrders = 0
 
     private var watcherThread: Thread = Thread()
@@ -93,7 +99,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
 
     private val minPriceSensitive: BigDecimal
     private val maxPriceSensitive: BigDecimal
-    private val orderVolume: BigDecimal
+    private var orderVolume: BigDecimal
     private val priceOffset: BigDecimal
     private val priceStep: BigDecimal
     private val pair: CurrencyPair
@@ -102,9 +108,12 @@ class BitmexClothoBot(prefModel: PrefModel) {
     private val stopPriceStep: BigDecimal
     private val stopPriceBias: BigDecimal
 
+    private var initTotalBalance = BigDecimal.ZERO
+    private var profitBalance = PROFIT_BALANCE
+
     init {
         url = "https://${prefModel.url}"
-        wsUri = URI("wss://${prefModel.url}/realtime")
+        wsUri = URI("wss://${prefModel.url}/realtime");
         apiKey = prefModel.apiKey
         secretKey = prefModel.secretKey
         tradeService = BitmexExchange(apiKey, secretKey, url).pollingTradeService
@@ -177,8 +186,8 @@ class BitmexClothoBot(prefModel: PrefModel) {
         watcherThread = Thread {
             var olPrintTime = 0L
             while (true) {
-                val wsTimeDiff = System.currentTimeMillis() - wsLastUpdTime
-                if (wsLastUpdTime > 0 && wsTimeDiff >= WS_TIMEOUT_TIME) {
+                val wsTimeDiff = System.currentTimeMillis() - socketLastUpdTime
+                if (socketLastUpdTime > 0 && wsTimeDiff >= WS_TIMEOUT_TIME) {
                     socketState = WebSocketStatus.Closed
                 }
 
@@ -432,8 +441,8 @@ class BitmexClothoBot(prefModel: PrefModel) {
         return false
     }
 
-    private fun isNear(firstPrice: BigDecimal, scondPrice: BigDecimal): Boolean {
-        return (firstPrice - scondPrice).abs() <= priceStep.divide(BigDecimal("2"))
+    private fun isNear(first: BigDecimal, second: BigDecimal): Boolean {
+        return (first - second).abs() <= priceStep.divide(BIGDECIMAL_TWO)
     }
 
     private fun onHandleMessages(message: String) {
@@ -456,13 +465,13 @@ class BitmexClothoBot(prefModel: PrefModel) {
     }
 
     private fun updPositions() {
-        if (System.currentTimeMillis() - posLastUpdTime < 1000 || positionsThread.isAlive) {
+        if (System.currentTimeMillis() - positionLastUpdTime < 1000 || positionsThread.isAlive) {
             return
         }
 
         positionsThread = Thread {
             try {
-                posLastUpdTime = System.currentTimeMillis()
+                positionLastUpdTime = System.currentTimeMillis()
                 closePositions()
             } catch (exception: Exception) {
                 exception.printStackTrace()
@@ -481,7 +490,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         } else if (oldPrice != currentPrice && !ordersThread.isAlive) {
             ordersThread = Thread {
                 try {
-                    wsLastUpdTime = System.currentTimeMillis()
+                    socketLastUpdTime = System.currentTimeMillis()
                     updateOrders(currentPrice)
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -498,8 +507,9 @@ class BitmexClothoBot(prefModel: PrefModel) {
         val isInDownChannel = offset?.let { it <= -(priceOffset + minPriceSensitive) } ?: false
         val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
 
-        if (wsLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
+        if (socketLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
             synchronisedOrders()
+            syncAccountBalance()
         }
 
         val message = "${Date()} Handle incoming trade " +
@@ -536,7 +546,7 @@ class BitmexClothoBot(prefModel: PrefModel) {
         synchronisedOrders(openedStopOrders, bitmexOrderIds)
         synchronisedOrders(openedPosOrders, bitmexOrderIds)
 
-        orderLastRequestTime = wsLastUpdTime
+        orderLastRequestTime = socketLastUpdTime
     }
 
     private fun updateOpenOrders(curPrice: BigDecimal, isBoost: Boolean) {
@@ -580,6 +590,37 @@ class BitmexClothoBot(prefModel: PrefModel) {
         } else {
             openedMainOrders.maxBy { it.key }
         }?.let { currentPrice - it.key }
+    }
+
+    private fun syncAccountBalance() {
+        val totalBalance = getAccountBalance() ?: return
+
+        if (System.currentTimeMillis() - balanceLastUpdTime >= BALANCE_PERIOD) {
+            initTotalBalance = totalBalance
+            profitBalance = PROFIT_BALANCE
+            balanceLastUpdTime = System.currentTimeMillis();
+        }
+
+        val message = "${Date()} BalanceLastUpdTime = ${Date(balanceLastUpdTime)}, " +
+                "orderVolume = $orderVolume, " +
+                "totalBalance = $totalBalance, " +
+                "profitBalance = $profitBalance, " +
+                "initTotalBalance = $initTotalBalance\n"
+
+        print("${ConsoleColors.BLUE_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
+
+        if (totalBalance > initTotalBalance + profitBalance) {
+            profitBalance += PROFIT_BALANCE
+            orderVolume = orderVolume.divide(BIGDECIMAL_TWO)
+        } else if (totalBalance < initTotalBalance) {
+            orderVolume = prefModel.orderVol
+        }
+    }
+
+    private fun getAccountBalance(): BigDecimal? {
+        return tradeService.getBitmexWallet()?.let { wallet ->
+            wallet.walletBalance?.divide(BigDecimal(HUNDRED_MILLIONS));
+        }
     }
 
     private fun Double.format(digits: Int) = String.format("%.${digits}f", this)

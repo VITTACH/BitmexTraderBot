@@ -13,4 +13,5 @@ data class BitmexPrivateOrder(
         @JsonProperty("stopPx") val stopPx: BigDecimal?,
         @JsonProperty("ordType") val ordType: String?,
         @JsonProperty("timeInForce") val expire: String?,
-        @JsonProperty("execInst") val execInst: String?)
+        @JsonProperty("execInst") val execInst: String?
+)

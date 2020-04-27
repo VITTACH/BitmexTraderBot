@@ -1,10 +1,7 @@
 package com.trade.exchanges.bitmex.services
 
 import com.trade.exchanges.bitmex.dto.marketdata.BitmexTicker
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexOrderParams
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexOrderType
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexPosition
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexPrivateOrder
+import com.trade.exchanges.bitmex.dto.privatedata.*
 import com.trade.exchanges.core.CurrencyPair
 import com.trade.exchanges.core.orders.LimitOrder
 import com.trade.exchanges.core.orders.OrderType
@@ -35,4 +32,7 @@ interface BitmexTradeService {
 
     @Throws(IOException::class)
     fun closePosition(symbol: String): BitmexPosition
+
+    @Throws(IOException::class)
+    fun getBitmexWallet(): BitmexWallet?
 }

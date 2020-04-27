@@ -137,6 +137,11 @@ class BitmexTradeServiceRaw(val exchange: BitmexExchange) : BitmexBaseService(ex
     }
 
     @Throws(IOException::class)
+    override fun getBitmexWallet(): BitmexWallet? {
+        return bitmex.getWallet(apiKey, exchange.timeNonceFactory, signature)
+    }
+
+    @Throws(IOException::class)
     override fun cancelMyBitmexOrder(code: String?): List<BitmexPrivateOrder>? {
         return bitmex.cancelOpenOrder(apiKey, exchange.timeNonceFactory, signature, code)
     }

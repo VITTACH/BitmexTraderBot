@@ -1,10 +1,7 @@
 package com.trade.exchanges.bitmex.services
 
 import com.trade.exchanges.bitmex.dto.marketdata.BitmexTicker
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexOrderParams
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexOrderType
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexPosition
-import com.trade.exchanges.bitmex.dto.privatedata.BitmexPrivateOrder
+import com.trade.exchanges.bitmex.dto.privatedata.*
 import com.trade.exchanges.core.CurrencyPair
 import com.trade.exchanges.core.orders.LimitOrder
 import com.trade.exchanges.core.orders.OrderType
@@ -16,10 +13,6 @@ class BitmexTradeServiceMock: BitmexTradeService {
     }
 
     override fun getOrderBook(pair: CurrencyPair, oSide: OrderType): List<LimitOrder>? {
-        TODO("not implemented")
-    }
-
-    override fun getBitmexOrders(): List<BitmexPrivateOrder> {
         TODO("not implemented")
     }
 
@@ -35,7 +28,15 @@ class BitmexTradeServiceMock: BitmexTradeService {
         TODO("not implemented")
     }
 
+    override fun getBitmexWallet(): BitmexWallet? {
+        TODO("not implemented")
+    }
+
     override fun closePosition(symbol: String): BitmexPosition {
+        TODO("not implemented")
+    }
+
+    override fun getBitmexOrders(): List<BitmexPrivateOrder> {
         TODO("not implemented")
     }
 

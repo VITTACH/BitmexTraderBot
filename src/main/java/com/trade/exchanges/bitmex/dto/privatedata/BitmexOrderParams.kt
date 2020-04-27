@@ -12,4 +12,5 @@ data class BitmexOrderParams(
         val trigger: BitmexOrderTrigger? = null,
         val closeOnTrigger: Boolean?,
         val pegOffsetValue: BigDecimal? = null,
-        val text: String? = null)
+        val text: String? = null
+)

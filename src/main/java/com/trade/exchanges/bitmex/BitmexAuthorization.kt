@@ -2,6 +2,7 @@ package com.trade.exchanges.bitmex
 
 import com.trade.exchanges.bitmex.dto.privatedata.BitmexPosition
 import com.trade.exchanges.bitmex.dto.privatedata.BitmexPrivateOrder
+import com.trade.exchanges.bitmex.dto.privatedata.BitmexWallet
 import si.mazi.rescu.ParamsDigest
 import si.mazi.rescu.SynchronizedValueFactory
 import java.io.IOException
@@ -14,6 +15,15 @@ import javax.ws.rs.core.MediaType
 @Path("/api/v1")
 @Produces(MediaType.APPLICATION_JSON)
 interface BitmexAuthorization {
+
+    @GET
+    @Path("user/margin")
+    @Throws(BitmexException::class)
+    fun getWallet(
+            @HeaderParam("api-key") apiKey: String,
+            @HeaderParam("api-expires") nonce: SynchronizedValueFactory<Long>,
+            @HeaderParam("api-signature") paramsDigest: ParamsDigest
+    ): BitmexWallet?
 
     @DELETE
     @Path("order")
