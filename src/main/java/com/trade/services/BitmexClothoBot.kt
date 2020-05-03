@@ -57,12 +57,14 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         private val BIGDECIMAL_TWO = BigDecimal("2")
         private val PROFIT_BALANCE = BigDecimal("0.0001")
 
+        private const val HUNDRED_MILLIONS = 100_000_000
+
         private const val SYNC_PERIOD = 60 * 1000
         private const val BALANCE_PERIOD = 8 * 3600 * 1000
-        private const val HUNDRED_MILLIONS = 100_000_000
-        private const val WS_TIMEOUT_TIME = 120 * 1000
+        private const val WS_TIMEOUT = 120 * 1000
+
         private const val POSITION_PROFIT_SCALE = 5
-        private const val POSITION_LOSS_SCALE = 100
+        private const val POSITION_LOSS_SCALE = 60
     }
 
     private val apiKey: String
@@ -187,7 +189,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
             var olPrintTime = 0L
             while (true) {
                 val wsTimeDiff = System.currentTimeMillis() - socketLastUpdTime
-                if (socketLastUpdTime > 0 && wsTimeDiff >= WS_TIMEOUT_TIME) {
+                if (socketLastUpdTime > 0 && wsTimeDiff >= WS_TIMEOUT) {
                     socketState = WebSocketStatus.Closed
                 }
 
@@ -508,8 +510,8 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         val isBoost = offset?.let { it !in -maxOffset..maxOffset } ?: false
 
         if (socketLastUpdTime - orderLastRequestTime > SYNC_PERIOD) {
-            synchronisedOrders()
-            syncAccountBalance()
+            syncOpenedOrders()
+            adaptOrderVolume()
         }
 
         val message = "${Date()} Handle incoming trade " +
@@ -532,7 +534,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         }
     }
 
-    private fun synchronisedOrders() {
+    private fun syncOpenedOrders() {
         val bitmexOrderIds = tradeService.getBitmexOrders().map { it.id }
         val message = "${Date()} BEFORE SYNCHRONISED " +
                 "bitmexOrderIds = $bitmexOrderIds, " +
@@ -542,9 +544,9 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         println(message)
 
-        synchronisedOrders(openedMainOrders, bitmexOrderIds)
-        synchronisedOrders(openedStopOrders, bitmexOrderIds)
-        synchronisedOrders(openedPosOrders, bitmexOrderIds)
+        syncOpenedOrders(openedMainOrders, bitmexOrderIds)
+        syncOpenedOrders(openedStopOrders, bitmexOrderIds)
+        syncOpenedOrders(openedPosOrders, bitmexOrderIds)
 
         orderLastRequestTime = socketLastUpdTime
     }
@@ -571,7 +573,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         placeOrders(stopOrderSide, price, BitmexOrderType.StopLimit, orderVolume)
     }
 
-    private fun synchronisedOrders(
+    private fun syncOpenedOrders(
             orders: ConcurrentHashMap<BigDecimal, String>,
             bitmexOrderIds: List<String?>
     ) {
@@ -592,14 +594,9 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
         }?.let { currentPrice - it.key }
     }
 
-    private fun syncAccountBalance() {
+    private fun adaptOrderVolume() {
         val totalBalance = getAccountBalance() ?: return
-
-        if (System.currentTimeMillis() - balanceLastUpdTime >= BALANCE_PERIOD) {
-            initTotalBalance = totalBalance
-            profitBalance = PROFIT_BALANCE
-            balanceLastUpdTime = System.currentTimeMillis();
-        }
+        initTotalBalance(totalBalance)
 
         val message = "${Date()} BalanceLastUpdTime = ${Date(balanceLastUpdTime)}, " +
                 "orderVolume = $orderVolume, " +
@@ -614,6 +611,14 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
             orderVolume = orderVolume.divide(BIGDECIMAL_TWO)
         } else if (totalBalance < initTotalBalance) {
             orderVolume = prefModel.orderVol
+        }
+    }
+
+    private fun initTotalBalance(totalBalance: BigDecimal) {
+        if (System.currentTimeMillis() - balanceLastUpdTime >= BALANCE_PERIOD) {
+            initTotalBalance = totalBalance
+            profitBalance = PROFIT_BALANCE
+            balanceLastUpdTime = System.currentTimeMillis();
         }
     }
 
