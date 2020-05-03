@@ -88,9 +88,9 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
     private var orderLastRequestTime = 0L
     private var countOfOrders = 0
 
-    private var watcherThread: Thread = Thread()
-    private var ordersThread: Thread = Thread()
     private var positionsThread: Thread = Thread()
+    private var watcherThread: Thread = Thread()
+    private var orderThread: Thread = Thread()
 
     private val objMapper = ObjectMapper()
     private var socketState = WebSocketStatus.Closed
@@ -109,6 +109,8 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
     private val stopLossOffset: BigDecimal
     private val stopPriceStep: BigDecimal
     private val stopPriceBias: BigDecimal
+
+    private var positionLossValue = POSITION_LOSS_SCALE
 
     private var initTotalBalance = BigDecimal.ZERO
     private var profitBalance = PROFIT_BALANCE
@@ -243,8 +245,8 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         val isLongProfit = side == OrderType.BID && profitPercent <= -POSITION_PROFIT_SCALE
         val isShortProfit = side == OrderType.ASK && profitPercent >= POSITION_PROFIT_SCALE
-        val isLongLoss = side == OrderType.BID && profitPercent >= POSITION_LOSS_SCALE
-        val isShortLoss = side == OrderType.ASK && profitPercent <= -POSITION_LOSS_SCALE
+        val isLongLoss = side == OrderType.BID && profitPercent >= positionLossValue
+        val isShortLoss = side == OrderType.ASK && profitPercent <= -positionLossValue
 
         val message = "Position: profit = <b>${isLongProfit || isShortProfit}</b>\n" +
                 "side = <b>$side</b>, " +
@@ -256,6 +258,8 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         //println("${ConsoleColors.BLACK_UNDERLINED}${Date()} WS -> $message${ConsoleColors.RESET}")
 
+        adaptLossValue(isLongLoss, isShortLoss, isLongProfit, isShortProfit)
+
         if (isLongProfit || isLongLoss || isShortProfit || isShortLoss) {
             telegramService.sendMessage(telegramChatId, "Close position. $message")
             try {
@@ -264,6 +268,19 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
             } catch (exception: Exception) {
                 exception.printStackTrace()
             }
+        }
+    }
+
+    private fun adaptLossValue(
+            isLongLoss: Boolean,
+            isShortLoss: Boolean,
+            isLongProfit: Boolean,
+            isShortProfit: Boolean
+    ) {
+        if (positionLossValue > POSITION_PROFIT_SCALE && (isLongLoss || isShortLoss)) {
+            positionLossValue /= 2
+        } else if (positionLossValue < POSITION_LOSS_SCALE * 2 && (isLongProfit || isShortProfit)) {
+            positionLossValue += POSITION_LOSS_SCALE / 6
         }
     }
 
@@ -489,8 +506,8 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         if (oldPrice == BigDecimal.ZERO) {
             oldPrice = currentPrice
-        } else if (oldPrice != currentPrice && !ordersThread.isAlive) {
-            ordersThread = Thread {
+        } else if (oldPrice != currentPrice && !orderThread.isAlive) {
+            orderThread = Thread {
                 try {
                     socketLastUpdTime = System.currentTimeMillis()
                     updateOrders(currentPrice)
