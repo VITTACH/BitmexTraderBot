@@ -278,7 +278,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
             isShortProfit: Boolean
     ) {
         if (positionLossValue > POSITION_PROFIT_SCALE && (isLongLoss || isShortLoss)) {
-            positionLossValue /= 2
+            positionLossValue -= POSITION_LOSS_SCALE / 6
         } else if (positionLossValue < POSITION_LOSS_SCALE * 2 && (isLongProfit || isShortProfit)) {
             positionLossValue += POSITION_LOSS_SCALE / 6
         }
@@ -408,7 +408,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
                 val isLowest = orderEntry.key < price - maxPriceOffset
                 val isNear = isNear(orderEntry.key, price)
 
-                val message = "Cancel my order = ${orderEntry.key}" +
+                val message = "Cancel order = ${orderEntry.key}, " +
                         "at price = $price, " +
                         "maxPriceOffset = $maxPriceOffset, " +
                         "isHigher = $isHigher, " +
@@ -545,7 +545,7 @@ class BitmexClothoBot(private val prefModel: PrefModel) {
 
         if (offset == null || isInUpChannel || isInDownChannel) {
             print("${ConsoleColors.WHITE_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
-            updateOpenOrders(currentPrice, isBoost)
+            updateOpenOrders(currentPrice, isBoost = false)
         } else {
             print("${ConsoleColors.BLACK_BACKGROUND_BRIGHT}$message${ConsoleColors.RESET}")
         }
